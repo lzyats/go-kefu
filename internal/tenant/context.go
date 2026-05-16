@@ -1,0 +1,60 @@
+package tenant
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+type contextKey string
+
+const (
+	HeaderTenantID = "X-Tenant-ID"
+	HeaderAppID    = "X-App-ID"
+
+	tenantIDKey contextKey = "tenant_id"
+	appIDKey    contextKey = "app_id"
+)
+
+type Context struct {
+	TenantID string
+	AppID    string
+}
+
+func Middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tc := Context{
+			TenantID: c.GetHeader(HeaderTenantID),
+			AppID:    c.GetHeader(HeaderAppID),
+		}
+		if tc.TenantID == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Tenant-ID"})
+			return
+		}
+		if tc.AppID == "" {
+			tc.AppID = "default"
+		}
+		ctx := WithContext(c.Request.Context(), tc)
+		c.Request = c.Request.WithContext(ctx)
+		c.Set(string(tenantIDKey), tc.TenantID)
+		c.Set(string(appIDKey), tc.AppID)
+		c.Next()
+	}
+}
+
+func WithContext(ctx context.Context, tc Context) context.Context {
+	ctx = context.WithValue(ctx, tenantIDKey, tc.TenantID)
+	return context.WithValue(ctx, appIDKey, tc.AppID)
+}
+
+func FromContext(ctx context.Context) Context {
+	tc := Context{}
+	if tenantID, ok := ctx.Value(tenantIDKey).(string); ok {
+		tc.TenantID = tenantID
+	}
+	if appID, ok := ctx.Value(appIDKey).(string); ok {
+		tc.AppID = appID
+	}
+	return tc
+}
