@@ -1,0 +1,194 @@
+package wsapp
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/tiger1103/gfast/v3/internal/customer/cache"
+	"github.com/tiger1103/gfast/v3/internal/customer/domain"
+	"github.com/tiger1103/gfast/v3/internal/customer/store"
+
+	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
+)
+
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 16 * 1024
+)
+
+type Client struct {
+	hub      *Hub
+	log      *zap.Logger
+	conn     *websocket.Conn
+	send     chan []byte
+	connID   string
+	tenantID string
+	appID    string
+	userType string
+	userID   string
+	deviceID string
+	nodeID   string
+	cache    *cache.RedisCache
+	store    store.Store
+}
+
+func (c *Client) RouteKey() string {
+	return c.tenantID + ":" + c.userType + ":" + c.userID
+}
+
+func (c *Client) ReadPump() {
+	defer func() {
+		if c.cache != nil {
+			_ = c.cache.RemoveConnection(context.Background(), c.tenantID, c.userType, c.userID, c.deviceID)
+		}
+		c.hub.unregister <- c
+		_ = c.conn.Close()
+	}()
+
+	if c.cache != nil {
+		_ = c.cache.RegisterConnection(context.Background(), c.tenantID, c.userType, c.userID, c.deviceID, c.nodeID)
+	}
+
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	for {
+		_, body, err := c.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		c.handle(body)
+	}
+}
+
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		_ = c.conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) handle(body []byte) {
+	var envelope Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		c.writeJSON(EventError, ErrorData{Message: "invalid envelope"})
+		return
+	}
+
+	switch envelope.Event {
+	case EventPing:
+		if c.cache != nil {
+			_ = c.cache.RefreshConnection(context.Background(), c.tenantID, c.userType, c.userID, c.deviceID)
+		}
+		c.writeJSON(EventPong, map[string]any{"ts": time.Now().UnixMilli()})
+	case EventSendMessage:
+		var data SendMessageData
+		if err := json.Unmarshal(envelope.Data, &data); err != nil {
+			c.writeJSON(EventError, ErrorData{Message: "invalid send_message data"})
+			return
+		}
+		c.handleSendMessage(data)
+	default:
+		c.writeJSON(EventError, ErrorData{Message: "unsupported event"})
+	}
+}
+
+func (c *Client) handleSendMessage(data SendMessageData) {
+	if c.store == nil {
+		c.writeJSON(EventError, ErrorData{Message: "message store unavailable"})
+		return
+	}
+	if data.SessionID == "" || data.Content == "" {
+		c.writeJSON(EventError, ErrorData{Message: "session_id and content are required"})
+		return
+	}
+	if data.MsgType == "" {
+		data.MsgType = "text"
+	}
+
+	session, err := c.store.GetSession(context.Background(), c.tenantID, data.SessionID)
+	if err != nil {
+		c.writeJSON(EventError, ErrorData{Message: "session not found"})
+		return
+	}
+
+	senderType := domain.UserType(c.userType)
+	receiverID := session.AgentID
+	receiverType := string(domain.UserTypeAgent)
+	if senderType == domain.UserTypeAgent {
+		receiverID = session.UserID
+		receiverType = string(domain.UserTypeCustomer)
+	}
+
+	message, err := c.store.SaveMessage(context.Background(), domain.Message{
+		TenantID:    c.tenantID,
+		AppID:       c.appID,
+		SessionID:   data.SessionID,
+		ClientMsgID: data.ClientMsgID,
+		SenderID:    c.userID,
+		SenderType:  senderType,
+		ReceiverID:  receiverID,
+		MsgType:     data.MsgType,
+		Content:     data.Content,
+	})
+	if err != nil {
+		c.log.Sugar().Errorw("save ws message failed", "error", err)
+		c.writeJSON(EventError, ErrorData{Message: "save message failed"})
+		return
+	}
+
+	c.writeJSON(EventAck, map[string]any{
+		"client_msg_id": message.ClientMsgID,
+		"session_id":    message.SessionID,
+		"msg_id":        message.ID,
+		"seq":           message.Seq,
+		"status":        message.Status,
+	})
+	c.hub.SendTo(c.RouteKey(), EventMessage, message)
+	if receiverID != "" {
+		c.hub.SendTo(c.tenantID+":"+receiverType+":"+receiverID, EventMessage, message)
+	} else if senderType == domain.UserTypeCustomer {
+		c.hub.SendToTenantAgents(c.tenantID, EventMessage, message)
+	}
+}
+
+func (c *Client) writeJSON(event string, data any) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		c.log.Sugar().Warnw("marshal ws response failed", "error", err)
+		return
+	}
+	envelope, _ := json.Marshal(Envelope{Event: event, Data: body})
+	select {
+	case c.send <- envelope:
+	default:
+		c.hub.unregister <- c
+	}
+}

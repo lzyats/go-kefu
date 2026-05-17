@@ -1,0 +1,186 @@
+﻿package domain
+
+import "time"
+
+type UserType string
+
+const (
+	UserTypeCustomer UserType = "customer"
+	UserTypeAgent    UserType = "agent"
+	UserTypeAdmin    UserType = "admin"
+)
+
+type SessionStatus string
+
+const (
+	SessionWaiting      SessionStatus = "waiting"
+	SessionServing      SessionStatus = "serving"
+	SessionTransferring SessionStatus = "transferring"
+	SessionClosed       SessionStatus = "closed"
+	SessionTimeout      SessionStatus = "timeout"
+	SessionRated        SessionStatus = "rated"
+)
+
+type MessageStatus string
+
+const (
+	MessageSending   MessageStatus = "sending"
+	MessageSent      MessageStatus = "sent"
+	MessageDelivered MessageStatus = "delivered"
+	MessageRead      MessageStatus = "read"
+	MessageFailed    MessageStatus = "failed"
+	MessageRecalled  MessageStatus = "recalled"
+)
+
+type Tenant struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Channel struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	AppID       string    `json:"app_id"`
+	ChannelType string    `json:"channel_type"`
+	ChannelName string    `json:"channel_name"`
+	AppKey      string    `json:"app_key"`
+	Secret      string    `json:"secret,omitempty"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type Agent struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	AgentID      string    `json:"agent_id"`
+	Username     string    `json:"username"`
+	DisplayName  string    `json:"display_name"`
+	MaxSessions  int       `json:"max_sessions"`
+	Status       string    `json:"status"`
+	OnlineStatus string    `json:"online_status"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type AgentGroup struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	GroupID   string    `json:"group_id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type AdminStats struct {
+	OnlineAgents    int64 `json:"online_agents"`
+	WaitingSessions int64 `json:"waiting_sessions"`
+	ServingSessions int64 `json:"serving_sessions"`
+	TodayMessages   int64 `json:"today_messages"`
+}
+
+type SensitiveWord struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	Word      string    `json:"word"`
+	Level     string    `json:"level"`
+	Action    string    `json:"action"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Blacklist struct {
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	TargetType string    `json:"target_type"`
+	TargetValue string    `json:"target_value"`
+	Reason     string    `json:"reason"`
+	Status     string    `json:"status"`
+	ExpireAt   time.Time `json:"expire_at"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type RiskEvent struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	EventType    string    `json:"event_type"`
+	TargetType   string    `json:"target_type"`
+	TargetValue  string    `json:"target_value"`
+	Level        string    `json:"level"`
+	Description  string    `json:"description"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type TenantConfig struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	ConfigKey   string    `json:"config_key"`
+	ConfigValue string    `json:"config_value"`
+	ValueType   string    `json:"value_type"`
+	Remark      string    `json:"remark"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type DailyReport struct {
+	Date            string `json:"date"`
+	NewSessions     int64  `json:"new_sessions"`
+	ClosedSessions  int64  `json:"closed_sessions"`
+	Messages        int64  `json:"messages"`
+	ActiveCustomers int64  `json:"active_customers"`
+}
+
+type Session struct {
+	ID          string        `json:"id"`
+	TenantID    string        `json:"tenant_id"`
+	AppID       string        `json:"app_id"`
+	ChannelID   string        `json:"channel_id"`
+	UserID      string        `json:"user_id"`
+	AgentID     string        `json:"agent_id"`
+	GroupID     string        `json:"group_id"`
+	Status      SessionStatus `json:"status"`
+	Priority    int           `json:"priority"`
+	LastSeq     int64         `json:"last_seq"`
+	LastMsgTime time.Time     `json:"last_msg_time"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
+type Message struct {
+	ID          string        `json:"id"`
+	TenantID    string        `json:"tenant_id"`
+	AppID       string        `json:"app_id"`
+	ChannelID   string        `json:"channel_id"`
+	SessionID   string        `json:"session_id"`
+	ClientMsgID string        `json:"client_msg_id"`
+	SenderID    string        `json:"sender_id"`
+	SenderType  UserType      `json:"sender_type"`
+	ReceiverID  string        `json:"receiver_id"`
+	MsgType     string        `json:"msg_type"`
+	Content     string        `json:"content"`
+	Seq         int64         `json:"seq"`
+	Status      MessageStatus `json:"status"`
+	SendTime    time.Time     `json:"send_time"`
+}
+
+type OutboxEvent struct {
+	ID            string    `json:"id"`
+	TenantID      string    `json:"tenant_id"`
+	AggregateType string    `json:"aggregate_type"`
+	AggregateID   string    `json:"aggregate_id"`
+	EventType     string    `json:"event_type"`
+	Payload       []byte    `json:"payload"`
+	Status        string    `json:"status"`
+	RetryCount    int       `json:"retry_count"`
+	NextRetryTime time.Time `json:"next_retry_time"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+

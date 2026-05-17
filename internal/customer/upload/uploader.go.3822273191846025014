@@ -1,0 +1,272 @@
+﻿package upload
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/tiger1103/gfast/v3/internal/customer/config"
+)
+
+const (
+	maxImageSize = 5 * 1024 * 1024
+	uploadRoot   = "customer"
+)
+
+type Result struct {
+	Path        string `json:"path"`
+	URL         string `json:"url"`
+	Name        string `json:"name"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+func SaveImage(ctx context.Context, cfg config.UploadConfig, tenantID string, file *multipart.FileHeader) (Result, error) {
+	if file == nil {
+		return Result{}, errors.New("file is required")
+	}
+	if file.Size <= 0 || file.Size > maxImageSize {
+		return Result{}, errors.New("image size must be less than 5MB")
+	}
+
+	payload, contentType, ext, err := readImage(file)
+	if err != nil {
+		return Result{}, err
+	}
+
+	objectPath := "/" + strings.TrimLeft(path.Join(uploadRoot, tenantID, time.Now().Format("20060102"), randomName(ext)), "/")
+	if cfg.Default == 3 {
+		return saveToS3(ctx, cfg.S3, objectPath, payload, contentType, file.Size)
+	}
+	return saveToLocal(cfg.Local, objectPath, payload, contentType, file.Size)
+}
+
+func readImage(file *multipart.FileHeader) ([]byte, string, string, error) {
+	src, err := file.Open()
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer src.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(src, maxImageSize+1))
+	if err != nil {
+		return nil, "", "", err
+	}
+	if int64(len(payload)) > maxImageSize {
+		return nil, "", "", errors.New("image size must be less than 5MB")
+	}
+
+	contentType := http.DetectContentType(payload)
+	extByType := map[string]string{
+		"image/jpeg": ".jpg",
+		"image/png":  ".png",
+		"image/gif":  ".gif",
+		"image/webp": ".webp",
+	}
+	ext, ok := extByType[contentType]
+	if !ok {
+		return nil, "", "", errors.New("only jpg, png, gif and webp images are supported")
+	}
+	return payload, contentType, ext, nil
+}
+
+func saveToLocal(cfg config.LocalUpload, objectPath string, payload []byte, contentType string, size int64) (Result, error) {
+	root := strings.TrimSpace(cfg.Path)
+	if root == "" {
+		root = "uploads"
+	}
+	relativePath := filepath.FromSlash(strings.TrimLeft(objectPath, "/"))
+	fullPath := filepath.Join(root, relativePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return Result{}, err
+	}
+	if err := os.WriteFile(fullPath, payload, 0644); err != nil {
+		return Result{}, err
+	}
+
+	publicPath := "/" + filepath.ToSlash(fullPath)
+	publicURL := publicPath
+	if cfg.BaseURL != "" {
+		publicURL = strings.TrimRight(cfg.BaseURL, "/") + encodeS3Path(objectPath)
+	}
+	return Result{
+		Path:        publicPath,
+		URL:         publicURL,
+		Name:        path.Base(objectPath),
+		ContentType: contentType,
+		Size:        size,
+	}, nil
+}
+
+func saveToS3(ctx context.Context, cfg config.S3UploadConfig, objectPath string, payload []byte, contentType string, size int64) (Result, error) {
+	endpoint := strings.TrimRight(cfg.Endpoint, "/")
+	if endpoint == "" || cfg.Region == "" || cfg.Bucket == "" || cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
+		return Result{}, errors.New("S3 config is incomplete: endpoint, region, bucket, accessKeyId and secretAccessKey are required")
+	}
+
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return Result{}, err
+	}
+	if endpointURL.Scheme == "" {
+		endpointURL.Scheme = "https"
+	}
+
+	host := endpointURL.Host
+	requestPath := objectPath
+	if cfg.ForcePathStyle {
+		requestPath = "/" + strings.TrimLeft(path.Join(cfg.Bucket, strings.TrimPrefix(objectPath, "/")), "/")
+	} else {
+		host = cfg.Bucket + "." + endpointURL.Host
+	}
+
+	requestURL := endpointURL.Scheme + "://" + host + encodeS3Path(requestPath)
+	publicURL := requestURL
+	if cfg.BaseURL != "" {
+		publicURL = strings.TrimRight(cfg.BaseURL, "/") + encodeS3Path(objectPath)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL, bytes.NewReader(payload))
+	if err != nil {
+		return Result{}, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Host", host)
+	req.Host = host
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	shortDate := now.Format("20060102")
+	payloadHash := sha256HexBytes(payload)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("Authorization", buildS3Authorization(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.Region, shortDate, amzDate, host, requestPath, payloadHash))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Result{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return Result{}, fmt.Errorf("S3 upload failed, status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return Result{
+		Path:        objectPath,
+		URL:         publicURL,
+		Name:        path.Base(objectPath),
+		ContentType: contentType,
+		Size:        size,
+	}, nil
+}
+
+func randomName(ext string) string {
+	const chars = "0123456789abcdef"
+	out := make([]byte, 16)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			return fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+		}
+		out[i] = chars[n.Int64()]
+	}
+	return fmt.Sprintf("%d_%s%s", time.Now().UnixNano(), string(out), ext)
+}
+
+func buildS3Authorization(accessKeyID, secretAccessKey, region, shortDate, amzDate, host, requestPath, payloadHash string) string {
+	canonicalHeaders := strings.Join([]string{
+		"host:" + strings.ToLower(host),
+		"x-amz-content-sha256:" + payloadHash,
+		"x-amz-date:" + amzDate,
+		"",
+	}, "\n")
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonicalRequest := strings.Join([]string{
+		http.MethodPut,
+		encodeS3Path(requestPath),
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+	credentialScope := strings.Join([]string{shortDate, region, "s3", "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		sha256Hex(canonicalRequest),
+	}, "\n")
+
+	signingKey := buildAWS4SigningKey(secretAccessKey, shortDate, region, "s3")
+	signature := hmacSHA256Hex(signingKey, stringToSign)
+
+	return fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		accessKeyID,
+		credentialScope,
+		signedHeaders,
+		signature,
+	)
+}
+
+func encodeS3Path(objectPath string) string {
+	segments := strings.Split(objectPath, "/")
+	for i, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		escaped := url.PathEscape(segment)
+		escaped = strings.ReplaceAll(escaped, "+", "%20")
+		segments[i] = escaped
+	}
+	encoded := strings.Join(segments, "/")
+	if !strings.HasPrefix(encoded, "/") {
+		encoded = "/" + encoded
+	}
+	return encoded
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func sha256HexBytes(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func hmacSHA256(secret []byte, value string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(value))
+	return mac.Sum(nil)
+}
+
+func hmacSHA256Hex(secret []byte, value string) string {
+	return hex.EncodeToString(hmacSHA256(secret, value))
+}
+
+func buildAWS4SigningKey(secretAccessKey, shortDate, region, service string) []byte {
+	kDate := hmacSHA256([]byte("AWS4"+secretAccessKey), shortDate)
+	kRegion := hmacSHA256(kDate, region)
+	kService := hmacSHA256(kRegion, service)
+	return hmacSHA256(kService, "aws4_request")
+}
+

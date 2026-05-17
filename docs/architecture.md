@@ -77,16 +77,19 @@ cs_audit
 
 ## 当前实现状态
 
-这版是可编译的基础骨架：
+这版已经从内存骨架推进到可接真实基础设施的实现：
 
 - Gin API 服务
 - Gorilla WebSocket 服务
 - 多租户请求头中间件
-- 会话创建接口
-- 消息写入与幂等占位实现
+- MySQL 会话、消息、Outbox 存储
+- Redis 坐席在线状态、最少会话优先分配、WS 连接路由
+- RocketMQ Outbox worker，异步投递 `message.created`
+- 会话创建接口，创建时自动尝试分配在线坐席
+- 消息写入、幂等和 Outbox 同事务落库
 - 按 `after_seq` 拉取消息
 - WS `ping` / `send_message` / `ack` 协议壳
 - MySQL 初始化迁移
 - Docker Compose 与 Nginx 样例
 
-下一步建议优先替换内存存储为 MySQL + Redis，并实现坐席分配策略。
+下一步建议实现会话关闭、坐席工作台、消息推送消费端和 GFast 后台菜单。

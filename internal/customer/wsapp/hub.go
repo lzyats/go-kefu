@@ -1,0 +1,106 @@
+package wsapp
+
+import (
+	"encoding/json"
+	"strings"
+	"sync"
+
+	"go.uber.org/zap"
+)
+
+type Hub struct {
+	log        *zap.Logger
+	register   chan *Client
+	unregister chan *Client
+	routes     map[string]map[*Client]struct{}
+	mu         sync.RWMutex
+}
+
+func NewHub(log *zap.Logger) *Hub {
+	return &Hub{
+		log:        log,
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		routes:     make(map[string]map[*Client]struct{}),
+	}
+}
+
+func (h *Hub) Run() {
+	for {
+		select {
+		case client := <-h.register:
+			key := client.RouteKey()
+			h.mu.Lock()
+			if h.routes[key] == nil {
+				h.routes[key] = make(map[*Client]struct{})
+			}
+			h.routes[key][client] = struct{}{}
+			h.mu.Unlock()
+			h.log.Sugar().Infow("ws client registered", "route", key, "conn_id", client.connID)
+		case client := <-h.unregister:
+			key := client.RouteKey()
+			h.mu.Lock()
+			if clients, ok := h.routes[key]; ok {
+				if _, exists := clients[client]; exists {
+					delete(clients, client)
+					close(client.send)
+				}
+				if len(clients) == 0 {
+					delete(h.routes, key)
+				}
+			}
+			h.mu.Unlock()
+			h.log.Sugar().Infow("ws client unregistered", "route", key, "conn_id", client.connID)
+		}
+	}
+}
+
+func (h *Hub) SendTo(route string, event string, data any) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		h.log.Sugar().Warnw("marshal ws push failed", "error", err)
+		return
+	}
+	envelope, _ := json.Marshal(Envelope{Event: event, Data: body})
+	var stale []*Client
+	h.mu.RLock()
+	for client := range h.routes[route] {
+		select {
+		case client.send <- envelope:
+		default:
+			stale = append(stale, client)
+		}
+	}
+	h.mu.RUnlock()
+	for _, client := range stale {
+		h.unregister <- client
+	}
+}
+
+func (h *Hub) SendToTenantAgents(tenantID string, event string, data any) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		h.log.Sugar().Warnw("marshal ws tenant push failed", "error", err)
+		return
+	}
+	envelope, _ := json.Marshal(Envelope{Event: event, Data: body})
+	prefix := tenantID + ":agent:"
+	var stale []*Client
+	h.mu.RLock()
+	for route, clients := range h.routes {
+		if !strings.HasPrefix(route, prefix) {
+			continue
+		}
+		for client := range clients {
+			select {
+			case client.send <- envelope:
+			default:
+				stale = append(stale, client)
+			}
+		}
+	}
+	h.mu.RUnlock()
+	for _, client := range stale {
+		h.unregister <- client
+	}
+}

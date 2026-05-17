@@ -16,12 +16,14 @@ CREATE TABLE IF NOT EXISTS cs_channel (
   channel_name VARCHAR(128) NOT NULL,
   app_key VARCHAR(128) NOT NULL,
   secret VARCHAR(255) NOT NULL,
+  default_group_id VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL DEFAULT 'enabled',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at DATETIME NULL,
   UNIQUE KEY uk_tenant_app_key (tenant_id, app_key),
-  KEY idx_tenant_channel (tenant_id, channel_type)
+  KEY idx_tenant_channel (tenant_id, channel_type),
+  KEY idx_tenant_app_group (tenant_id, app_id, default_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS cs_user (
@@ -94,6 +96,9 @@ CREATE TABLE IF NOT EXISTS cs_session (
   user_read_seq BIGINT NOT NULL DEFAULT 0,
   agent_read_seq BIGINT NOT NULL DEFAULT 0,
   last_msg_time DATETIME NULL,
+  source_ip VARCHAR(64) NOT NULL DEFAULT '',
+  user_agent VARCHAR(512) NOT NULL DEFAULT '',
+  login_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   close_time DATETIME NULL,
   close_reason VARCHAR(255) NOT NULL DEFAULT '',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

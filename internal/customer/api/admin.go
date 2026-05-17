@@ -1,0 +1,401 @@
+package api
+
+import (
+	"net/http"
+	"strconv"
+
+	"github.com/tiger1103/gfast/v3/internal/customer/domain"
+	"github.com/tiger1103/gfast/v3/internal/customer/store"
+	"github.com/tiger1103/gfast/v3/internal/customer/tenant"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (s *Server) registerAdminRoutes(r gin.IRouter) {
+	admin := r.Group("/admin/v1")
+	admin.Use(tenant.Middleware())
+	{
+		admin.GET("/dashboard", s.adminDashboard)
+		admin.GET("/my/tenants", s.adminMyTenants)
+		admin.GET("/tenants", s.adminListTenants)
+		admin.POST("/tenants", s.adminSaveTenant)
+		admin.GET("/tenants/:tenant_id/admins", s.adminListTenantAdmins)
+		admin.POST("/tenants/:tenant_id/admins", s.adminBindTenantAdmin)
+		admin.DELETE("/tenants/:tenant_id/admins/:gfast_user_id", s.adminUnbindTenantAdmin)
+		admin.GET("/channels", s.adminListChannels)
+		admin.POST("/channels", s.adminSaveChannel)
+		admin.GET("/agents", s.adminListAgents)
+		admin.POST("/agents", s.adminSaveAgent)
+		admin.GET("/agent-groups", s.adminListAgentGroups)
+		admin.POST("/agent-groups", s.adminSaveAgentGroup)
+		admin.POST("/agent-groups/:group_id/agents/:agent_id", s.adminAddAgentToGroup)
+		admin.GET("/sessions", s.adminListSessions)
+		admin.POST("/sessions/:session_id/accept", s.adminAcceptSession)
+		admin.GET("/messages", s.adminListMessages)
+		admin.GET("/sensitive-words", s.adminListSensitiveWords)
+		admin.POST("/sensitive-words", s.adminSaveSensitiveWord)
+		admin.GET("/blacklists", s.adminListBlacklists)
+		admin.POST("/blacklists", s.adminSaveBlacklist)
+		admin.GET("/risk-events", s.adminListRiskEvents)
+		admin.GET("/reports/daily", s.adminDailyReports)
+		admin.GET("/configs", s.adminListConfigs)
+		admin.POST("/configs", s.adminSaveConfig)
+	}
+}
+
+func (s *Server) adminDashboard(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	stats, err := s.store.GetAdminStats(c.Request.Context(), tc.TenantID)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+func (s *Server) adminMyTenants(c *gin.Context) {
+	gfastUserID, err := strconv.ParseInt(c.GetHeader("X-Admin-ID"), 10, 64)
+	if err != nil || gfastUserID <= 0 {
+		c.JSON(http.StatusOK, gin.H{"items": []domain.Tenant{}, "locked": false})
+		return
+	}
+	items, err := s.store.ListTenantsByAdmin(c.Request.Context(), gfastUserID)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "locked": len(items) > 0})
+}
+
+func (s *Server) adminListTenants(c *gin.Context) {
+	items, err := s.store.ListTenants(c.Request.Context(), pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveTenant(c *gin.Context) {
+	var req domain.Tenant
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	item, err := s.store.UpsertTenant(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminListTenantAdmins(c *gin.Context) {
+	items, err := s.store.ListTenantAdmins(c.Request.Context(), c.Param("tenant_id"), pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminBindTenantAdmin(c *gin.Context) {
+	var req domain.TenantAdmin
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.TenantID = c.Param("tenant_id")
+	if req.GFastUserID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gfast_user_id is required"})
+		return
+	}
+	item, err := s.store.BindTenantAdmin(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminUnbindTenantAdmin(c *gin.Context) {
+	gfastUserID, err := strconv.ParseInt(c.Param("gfast_user_id"), 10, 64)
+	if err != nil || gfastUserID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid gfast_user_id"})
+		return
+	}
+	if err := s.store.UnbindTenantAdmin(c.Request.Context(), c.Param("tenant_id"), gfastUserID); err != nil {
+		if err == store.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant admin binding not found"})
+			return
+		}
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) adminListChannels(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListChannels(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveChannel(c *gin.Context) {
+	var req domain.Channel
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	tc := tenant.FromContext(c.Request.Context())
+	req.TenantID = tc.TenantID
+	item, err := s.store.UpsertChannel(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminListAgents(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListAgents(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveAgent(c *gin.Context) {
+	var req domain.Agent
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	tc := tenant.FromContext(c.Request.Context())
+	req.TenantID = tc.TenantID
+	item, err := s.store.UpsertAgent(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminListAgentGroups(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListAgentGroups(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveAgentGroup(c *gin.Context) {
+	var req domain.AgentGroup
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	tc := tenant.FromContext(c.Request.Context())
+	req.TenantID = tc.TenantID
+	item, err := s.store.UpsertAgentGroup(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminAddAgentToGroup(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	if err := s.store.AddAgentToGroup(c.Request.Context(), tc.TenantID, c.Param("agent_id"), c.Param("group_id")); err != nil {
+		if err == store.ErrNotFound {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent or agent group not found in current tenant"})
+			return
+		}
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) adminListSessions(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListSessions(c.Request.Context(), tc.TenantID, c.Query("status"), pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminAcceptSession(c *gin.Context) {
+	var req struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.AgentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	tc := tenant.FromContext(c.Request.Context())
+	session, err := s.store.GetSession(c.Request.Context(), tc.TenantID, c.Param("session_id"))
+	if err != nil {
+		if err == store.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		s.adminError(c, err)
+		return
+	}
+	if session.AgentID != "" && session.AgentID != req.AgentID {
+		c.JSON(http.StatusConflict, gin.H{"error": "session already accepted by another agent"})
+		return
+	}
+	session.AgentID = req.AgentID
+	session.Status = domain.SessionServing
+	if err := s.store.UpdateSession(c.Request.Context(), session); err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, session)
+}
+
+func (s *Server) adminListMessages(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListAdminMessages(
+		c.Request.Context(),
+		tc.TenantID,
+		c.Query("session_id"),
+		c.Query("sender_id"),
+		c.Query("keyword"),
+		pageLimit(c),
+		pageOffset(c),
+	)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminListSensitiveWords(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListSensitiveWords(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveSensitiveWord(c *gin.Context) {
+	var req domain.SensitiveWord
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.TenantID = tenant.FromContext(c.Request.Context()).TenantID
+	item, err := s.store.UpsertSensitiveWord(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminListBlacklists(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListBlacklists(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveBlacklist(c *gin.Context) {
+	var req domain.Blacklist
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.TenantID = tenant.FromContext(c.Request.Context()).TenantID
+	item, err := s.store.UpsertBlacklist(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminListRiskEvents(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListRiskEvents(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminDailyReports(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "7"))
+	items, err := s.store.ListDailyReports(c.Request.Context(), tc.TenantID, days)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminListConfigs(c *gin.Context) {
+	tc := tenant.FromContext(c.Request.Context())
+	items, err := s.store.ListTenantConfigs(c.Request.Context(), tc.TenantID, pageLimit(c), pageOffset(c))
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) adminSaveConfig(c *gin.Context) {
+	var req domain.TenantConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.TenantID = tenant.FromContext(c.Request.Context()).TenantID
+	item, err := s.store.UpsertTenantConfig(c.Request.Context(), req)
+	if err != nil {
+		s.adminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) adminError(c *gin.Context, err error) {
+	s.log.Sugar().Errorw("admin api failed", "path", c.Request.URL.Path, "error", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "admin api failed"})
+}
+
+func pageLimit(c *gin.Context) int {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	return limit
+}
+
+func pageOffset(c *gin.Context) int {
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	return offset
+}

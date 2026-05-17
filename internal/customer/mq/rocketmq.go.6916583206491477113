@@ -1,0 +1,92 @@
+﻿package mq
+
+import (
+	"context"
+	"errors"
+
+	"github.com/tiger1103/gfast/v3/internal/customer/config"
+	"github.com/tiger1103/gfast/v3/internal/customer/domain"
+
+	"github.com/apache/rocketmq-client-go/v2"
+	"github.com/apache/rocketmq-client-go/v2/primitive"
+	"github.com/apache/rocketmq-client-go/v2/producer"
+	"go.uber.org/zap"
+)
+
+type Publisher interface {
+	Start() error
+	Shutdown() error
+	PublishOutbox(ctx context.Context, event domain.OutboxEvent) error
+}
+
+type RocketPublisher struct {
+	log          *zap.Logger
+	messageTopic string
+	producer     rocketmq.Producer
+}
+
+func NewRocketPublisher(cfg config.RocketMQConfig, log *zap.Logger) (*RocketPublisher, error) {
+	if len(cfg.NameServers) == 0 {
+		return nil, errors.New("rocketmq name_servers is empty")
+	}
+	group := cfg.Group
+	if group == "" {
+		group = "customer-service"
+	}
+	topic := cfg.MessageTopic
+	if topic == "" {
+		topic = "cs_message"
+	}
+	options := []producer.Option{
+		producer.WithNameServer(cfg.NameServers),
+		producer.WithGroupName(group),
+	}
+	if cfg.AccessKey != "" || cfg.SecretKey != "" {
+		if cfg.AccessKey == "" || cfg.SecretKey == "" {
+			return nil, errors.New("rocketmq access_key and secret_key must be configured together")
+		}
+		options = append(options, producer.WithCredentials(primitive.Credentials{
+			AccessKey:     cfg.AccessKey,
+			SecretKey:     cfg.SecretKey,
+			SecurityToken: cfg.SecurityToken,
+		}))
+	}
+	p, err := rocketmq.NewProducer(options...)
+	if err != nil {
+		return nil, err
+	}
+	return &RocketPublisher{
+		log:          log,
+		messageTopic: topic,
+		producer:     p,
+	}, nil
+}
+
+func (p *RocketPublisher) Start() error {
+	return p.producer.Start()
+}
+
+func (p *RocketPublisher) Shutdown() error {
+	return p.producer.Shutdown()
+}
+
+func (p *RocketPublisher) PublishOutbox(ctx context.Context, event domain.OutboxEvent) error {
+	msg := primitive.NewMessage(p.messageTopic, event.Payload)
+	msg.WithTag(event.EventType)
+	msg.WithKeys([]string{event.AggregateID})
+	msg.WithProperty("tenant_id", event.TenantID)
+	msg.WithProperty("event_type", event.EventType)
+	msg.WithProperty("outbox_id", event.ID)
+	result, err := p.producer.SendSync(ctx, msg)
+	if err != nil {
+		return err
+	}
+	p.log.Sugar().Infow("outbox event published",
+		"outbox_id", event.ID,
+		"topic", p.messageTopic,
+		"msg_id", result.MsgID,
+		"status", result.Status,
+	)
+	return nil
+}
+

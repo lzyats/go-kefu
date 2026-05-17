@@ -1,0 +1,369 @@
+﻿package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"time"
+
+	"github.com/tiger1103/gfast/v3/internal/customer/domain"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
+)
+
+type MySQLStore struct {
+	db *sql.DB
+}
+
+func NewMySQLStore(db *sql.DB) *MySQLStore {
+	return &MySQLStore{db: db}
+}
+
+func OpenMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(80)
+	db.SetMaxIdleConns(20)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func (s *MySQLStore) CreateSession(ctx context.Context, session domain.Session) (domain.Session, error) {
+	now := time.Now()
+	if session.ID == "" {
+		session.ID = uuid.NewString()
+	}
+	if session.Status == "" {
+		session.Status = domain.SessionWaiting
+	}
+	session.CreatedAt = now
+	session.UpdatedAt = now
+	if session.LoginTime.IsZero() {
+		session.LoginTime = now
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cs_session (
+			tenant_id, app_id, session_id, channel_id, user_id, agent_id, group_id,
+			status, priority, last_seq, last_msg_time, source_ip, user_agent, login_time,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		session.TenantID, session.AppID, session.ID, session.ChannelID, session.UserID,
+		session.AgentID, session.GroupID, session.Status, session.Priority, session.LastSeq,
+		nullableTime(session.LastMsgTime), session.SourceIP, session.UserAgent,
+		session.LoginTime, session.CreatedAt, session.UpdatedAt,
+	)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	return session, nil
+}
+
+func (s *MySQLStore) GetSession(ctx context.Context, tenantID, sessionID string) (domain.Session, error) {
+	var session domain.Session
+	var lastMsgTime sql.NullTime
+	var createdAt, updatedAt time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT tenant_id, app_id, session_id, channel_id, user_id, agent_id, group_id,
+			status, priority, last_seq, last_msg_time, source_ip, user_agent, login_time,
+			created_at, updated_at
+		FROM cs_session
+		WHERE tenant_id = ? AND session_id = ? AND deleted_at IS NULL`,
+		tenantID, sessionID,
+	).Scan(
+		&session.TenantID, &session.AppID, &session.ID, &session.ChannelID, &session.UserID,
+		&session.AgentID, &session.GroupID, &session.Status, &session.Priority, &session.LastSeq,
+		&lastMsgTime, &session.SourceIP, &session.UserAgent, &session.LoginTime, &createdAt, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Session{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if lastMsgTime.Valid {
+		session.LastMsgTime = lastMsgTime.Time
+	}
+	session.CreatedAt = createdAt
+	session.UpdatedAt = updatedAt
+	return session, nil
+}
+
+func (s *MySQLStore) UpdateSession(ctx context.Context, session domain.Session) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE cs_session
+		SET agent_id = ?, group_id = ?, status = ?, priority = ?, last_seq = ?,
+			last_msg_time = ?, updated_at = ?
+		WHERE tenant_id = ? AND session_id = ? AND deleted_at IS NULL`,
+		session.AgentID, session.GroupID, session.Status, session.Priority, session.LastSeq,
+		nullableTime(session.LastMsgTime), time.Now(), session.TenantID, session.ID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *MySQLStore) SaveMessage(ctx context.Context, message domain.Message) (domain.Message, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return domain.Message{}, err
+	}
+	defer tx.Rollback()
+
+	existing, ok, err := getMessageByClientID(ctx, tx, message.TenantID, message.SessionID, message.ClientMsgID)
+	if err != nil {
+		return domain.Message{}, err
+	}
+	if ok {
+		return existing, tx.Commit()
+	}
+
+	session, err := getSessionForUpdate(ctx, tx, message.TenantID, message.SessionID)
+	if err != nil {
+		return domain.Message{}, err
+	}
+	if message.SenderType == domain.UserTypeAgent {
+		if session.AgentID == "" {
+			session.AgentID = message.SenderID
+		}
+		if session.Status == domain.SessionWaiting || session.Status == domain.SessionTransferring {
+			session.Status = domain.SessionServing
+		}
+	}
+
+	now := time.Now()
+	if message.ID == "" {
+		message.ID = uuid.NewString()
+	}
+	if message.ClientMsgID == "" {
+		message.ClientMsgID = uuid.NewString()
+	}
+	if message.MsgType == "" {
+		message.MsgType = "text"
+	}
+	message.AppID = session.AppID
+	message.ChannelID = session.ChannelID
+	message.Seq = session.LastSeq + 1
+	message.Status = domain.MessageSent
+	message.SendTime = now
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO cs_message (
+			tenant_id, app_id, channel_id, msg_id, session_id, client_msg_id,
+			sender_id, sender_type, receiver_id, msg_type, content, seq, status, send_time
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		message.TenantID, message.AppID, message.ChannelID, message.ID, message.SessionID,
+		message.ClientMsgID, message.SenderID, message.SenderType, message.ReceiverID,
+		message.MsgType, message.Content, message.Seq, message.Status, message.SendTime,
+	)
+	if err != nil {
+		if isDuplicate(err) {
+			existing, ok, findErr := getMessageByClientID(ctx, tx, message.TenantID, message.SessionID, message.ClientMsgID)
+			if findErr != nil {
+				return domain.Message{}, findErr
+			}
+			if ok {
+				return existing, tx.Commit()
+			}
+		}
+		return domain.Message{}, err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE cs_session
+		SET agent_id = ?, status = ?, last_seq = ?, last_msg_time = ?, updated_at = ?
+		WHERE tenant_id = ? AND session_id = ?`,
+		session.AgentID, session.Status, message.Seq, now, now, message.TenantID, message.SessionID,
+	)
+	if err != nil {
+		return domain.Message{}, err
+	}
+
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return domain.Message{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO cs_outbox (
+			tenant_id, aggregate_type, aggregate_id, event_type, payload,
+			status, retry_count, next_retry_time, created_at, updated_at
+		) VALUES (?, 'message', ?, 'message.created', ?, 'pending', 0, ?, ?, ?)`,
+		message.TenantID, message.ID, payload, now, now, now,
+	)
+	if err != nil {
+		return domain.Message{}, err
+	}
+
+	return message, tx.Commit()
+}
+
+func (s *MySQLStore) ListMessagesAfterSeq(ctx context.Context, tenantID, sessionID string, afterSeq int64, limit int) ([]domain.Message, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tenant_id, app_id, channel_id, msg_id, session_id, client_msg_id,
+			sender_id, sender_type, receiver_id, msg_type, content, seq, status, send_time
+		FROM cs_message
+		WHERE tenant_id = ? AND session_id = ? AND seq > ? AND deleted_at IS NULL
+		ORDER BY seq ASC
+		LIMIT ?`,
+		tenantID, sessionID, afterSeq, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []domain.Message
+	for rows.Next() {
+		var item domain.Message
+		if err := rows.Scan(
+			&item.TenantID, &item.AppID, &item.ChannelID, &item.ID, &item.SessionID,
+			&item.ClientMsgID, &item.SenderID, &item.SenderType, &item.ReceiverID,
+			&item.MsgType, &item.Content, &item.Seq, &item.Status, &item.SendTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *MySQLStore) ListPendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, aggregate_type, aggregate_id, event_type, payload,
+			status, retry_count, COALESCE(next_retry_time, created_at), created_at, updated_at
+		FROM cs_outbox
+		WHERE status IN ('pending', 'retry') AND (next_retry_time IS NULL OR next_retry_time <= NOW())
+		ORDER BY id ASC
+		LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []domain.OutboxEvent
+	for rows.Next() {
+		var dbID int64
+		var event domain.OutboxEvent
+		if err := rows.Scan(
+			&dbID, &event.TenantID, &event.AggregateType, &event.AggregateID,
+			&event.EventType, &event.Payload, &event.Status, &event.RetryCount,
+			&event.NextRetryTime, &event.CreatedAt, &event.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		event.ID = strconv.FormatInt(dbID, 10)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *MySQLStore) MarkOutboxSent(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE cs_outbox
+		SET status = 'sent', updated_at = NOW()
+		WHERE id = ?`,
+		id,
+	)
+	return err
+}
+
+func (s *MySQLStore) MarkOutboxRetry(ctx context.Context, id string, nextRetry time.Time, reason string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE cs_outbox
+		SET status = 'retry', retry_count = retry_count + 1, next_retry_time = ?, updated_at = NOW()
+		WHERE id = ?`,
+		nextRetry, id,
+	)
+	_ = reason
+	return err
+}
+
+func getSessionForUpdate(ctx context.Context, tx *sql.Tx, tenantID, sessionID string) (domain.Session, error) {
+	var session domain.Session
+	var lastMsgTime sql.NullTime
+	err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, app_id, session_id, channel_id, user_id, agent_id,
+			group_id, status, priority, last_seq, last_msg_time
+		FROM cs_session
+		WHERE tenant_id = ? AND session_id = ? AND deleted_at IS NULL
+		FOR UPDATE`,
+		tenantID, sessionID,
+	).Scan(
+		&session.TenantID, &session.AppID, &session.ID, &session.ChannelID, &session.UserID,
+		&session.AgentID, &session.GroupID, &session.Status, &session.Priority,
+		&session.LastSeq, &lastMsgTime,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Session{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if lastMsgTime.Valid {
+		session.LastMsgTime = lastMsgTime.Time
+	}
+	return session, nil
+}
+
+func getMessageByClientID(ctx context.Context, tx *sql.Tx, tenantID, sessionID, clientMsgID string) (domain.Message, bool, error) {
+	if clientMsgID == "" {
+		return domain.Message{}, false, nil
+	}
+	var message domain.Message
+	err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, app_id, channel_id, msg_id, session_id, client_msg_id,
+			sender_id, sender_type, receiver_id, msg_type, content, seq, status, send_time
+		FROM cs_message
+		WHERE tenant_id = ? AND session_id = ? AND client_msg_id = ? AND deleted_at IS NULL`,
+		tenantID, sessionID, clientMsgID,
+	).Scan(
+		&message.TenantID, &message.AppID, &message.ChannelID, &message.ID, &message.SessionID,
+		&message.ClientMsgID, &message.SenderID, &message.SenderType, &message.ReceiverID,
+		&message.MsgType, &message.Content, &message.Seq, &message.Status, &message.SendTime,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Message{}, false, nil
+	}
+	if err != nil {
+		return domain.Message{}, false, err
+	}
+	return message, true, nil
+}
+
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func isDuplicate(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+}
+

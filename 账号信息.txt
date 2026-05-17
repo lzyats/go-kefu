@@ -1,0 +1,5 @@
+CREATE USER `kefu`@`127.0.0.1` IDENTIFIED WITH caching_sha2_password BY '1q2w#E$R';
+
+GRANT Alter, Alter Routine, Create, Create Routine, Create Temporary Tables, Create View, Delete, Drop, Event, Execute, Grant Option, Index, Insert, Lock Tables, References, Select, Show View, Trigger, Update ON `kefu`.* TO `kefu`@`127.0.0.1`;
+
+GRANT Alter, Alter Routine, Create, Create Routine, Create Temporary Tables, Create User, Create View, Delete, Drop, Event, Execute, File, Grant Option, Index, Insert, Lock Tables, Process, References, Reload, Replication Client, Replication Slave, Select, Show Databases, Show View, Shutdown, Super, Trigger, Update ON *.* TO `kefu`@`127.0.0.1`;
