@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,8 @@ var ErrNotFound = errors.New("not found")
 type SessionStore interface {
 	CreateSession(ctx context.Context, session domain.Session) (domain.Session, error)
 	GetSession(ctx context.Context, tenantID, sessionID string) (domain.Session, error)
+	FindActiveSessionByUser(ctx context.Context, tenantID, appID, channelID, userID string) (domain.Session, error)
+	SaveCustomerProfile(ctx context.Context, tenantID, appID, userID, userName, avatar string) error
 	UpdateSession(ctx context.Context, session domain.Session) error
 }
 
@@ -41,13 +44,21 @@ type AdminStore interface {
 	ListTenants(ctx context.Context, limit, offset int) ([]domain.Tenant, error)
 	ListTenantsByAdmin(ctx context.Context, gfastUserID int64) ([]domain.Tenant, error)
 	UpsertTenant(ctx context.Context, tenant domain.Tenant) (domain.Tenant, error)
+	DeleteTenant(ctx context.Context, tenantID string) error
+	GetTenantAgentLimit(ctx context.Context, tenantID string) (int, error)
 	ListChannels(ctx context.Context, tenantID string, limit, offset int) ([]domain.Channel, error)
 	UpsertChannel(ctx context.Context, channel domain.Channel) (domain.Channel, error)
+	DeleteChannel(ctx context.Context, tenantID, appKey string) error
 	GetChannelDefaultGroupID(ctx context.Context, tenantID, appID, channelID string) (string, error)
 	ListAgents(ctx context.Context, tenantID string, limit, offset int) ([]domain.Agent, error)
+	CountAgents(ctx context.Context, tenantID string) (int64, error)
+	IsGFastAdmin(ctx context.Context, gfastUserID int64) (bool, error)
+	GetAgentByGFastUser(ctx context.Context, tenantID string, gfastUserID int64) (domain.Agent, error)
 	UpsertAgent(ctx context.Context, agent domain.Agent) (domain.Agent, error)
+	DeleteAgent(ctx context.Context, tenantID, agentID string) error
 	ListAgentGroups(ctx context.Context, tenantID string, limit, offset int) ([]domain.AgentGroup, error)
 	UpsertAgentGroup(ctx context.Context, group domain.AgentGroup) (domain.AgentGroup, error)
+	DeleteAgentGroup(ctx context.Context, tenantID, groupID string) error
 	AddAgentToGroup(ctx context.Context, tenantID, agentID, groupID string) error
 	ListTenantAdmins(ctx context.Context, tenantID string, limit, offset int) ([]domain.TenantAdmin, error)
 	BindTenantAdmin(ctx context.Context, item domain.TenantAdmin) (domain.TenantAdmin, error)
@@ -63,6 +74,10 @@ type AdminStore interface {
 	ListDailyReports(ctx context.Context, tenantID string, days int) ([]domain.DailyReport, error)
 	ListTenantConfigs(ctx context.Context, tenantID string, limit, offset int) ([]domain.TenantConfig, error)
 	UpsertTenantConfig(ctx context.Context, item domain.TenantConfig) (domain.TenantConfig, error)
+	ListFAQs(ctx context.Context, tenantID string, common bool, limit, offset int) ([]domain.FAQ, error)
+	ReplaceFAQs(ctx context.Context, tenantID string, common bool, items []domain.FAQ) ([]domain.FAQ, error)
+	GetCustomerTags(ctx context.Context, tenantID, appID, userID string) ([]string, error)
+	ReplaceCustomerTags(ctx context.Context, tenantID, appID, userID string, tags []string) ([]string, error)
 }
 
 type MemoryStore struct {
@@ -70,6 +85,7 @@ type MemoryStore struct {
 	sessions        map[string]domain.Session
 	messages        map[string][]domain.Message
 	clientMsgIDToID map[string]string
+	customerTags    map[string][]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -77,6 +93,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:        make(map[string]domain.Session),
 		messages:        make(map[string][]domain.Message),
 		clientMsgIDToID: make(map[string]string),
+		customerTags:    make(map[string][]string),
 	}
 }
 
@@ -109,6 +126,52 @@ func (s *MemoryStore) GetSession(_ context.Context, tenantID, sessionID string) 
 		return domain.Session{}, ErrNotFound
 	}
 	return session, nil
+}
+
+func (s *MemoryStore) FindActiveSessionByUser(_ context.Context, tenantID, appID, channelID, userID string) (domain.Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var found domain.Session
+	for _, session := range s.sessions {
+		if session.TenantID != tenantID || session.AppID != appID || session.UserID != userID {
+			continue
+		}
+		if channelID != "" && session.ChannelID != channelID {
+			continue
+		}
+		if session.Status == domain.SessionClosed || session.Status == domain.SessionRated || session.Status == domain.SessionTimeout {
+			continue
+		}
+		if found.ID == "" || session.UpdatedAt.After(found.UpdatedAt) {
+			found = session
+		}
+	}
+	if found.ID == "" {
+		return domain.Session{}, ErrNotFound
+	}
+	return found, nil
+}
+
+func (s *MemoryStore) SaveCustomerProfile(_ context.Context, tenantID, appID, userID, userName, avatar string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if userName == "" && avatar == "" {
+		return nil
+	}
+	for key, session := range s.sessions {
+		if session.TenantID == tenantID && session.AppID == appID && session.UserID == userID {
+			if userName != "" {
+				session.UserName = userName
+			}
+			if avatar != "" {
+				session.UserAvatar = avatar
+			}
+			s.sessions[key] = session
+		}
+	}
+	return nil
 }
 
 func (s *MemoryStore) UpdateSession(_ context.Context, session domain.Session) error {
@@ -213,6 +276,14 @@ func (s *MemoryStore) UpsertTenant(_ context.Context, tenant domain.Tenant) (dom
 	return tenant, nil
 }
 
+func (s *MemoryStore) DeleteTenant(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *MemoryStore) GetTenantAgentLimit(_ context.Context, _ string) (int, error) {
+	return 3, nil
+}
+
 func (s *MemoryStore) ListChannels(_ context.Context, _ string, _, _ int) ([]domain.Channel, error) {
 	return nil, nil
 }
@@ -221,12 +292,32 @@ func (s *MemoryStore) UpsertChannel(_ context.Context, channel domain.Channel) (
 	return channel, nil
 }
 
+func (s *MemoryStore) DeleteChannel(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (s *MemoryStore) ListAgents(_ context.Context, _ string, _, _ int) ([]domain.Agent, error) {
 	return nil, nil
 }
 
+func (s *MemoryStore) CountAgents(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
+func (s *MemoryStore) IsGFastAdmin(_ context.Context, _ int64) (bool, error) {
+	return false, nil
+}
+
+func (s *MemoryStore) GetAgentByGFastUser(_ context.Context, _ string, _ int64) (domain.Agent, error) {
+	return domain.Agent{}, ErrNotFound
+}
+
 func (s *MemoryStore) UpsertAgent(_ context.Context, agent domain.Agent) (domain.Agent, error) {
 	return agent, nil
+}
+
+func (s *MemoryStore) DeleteAgent(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func (s *MemoryStore) GetChannelDefaultGroupID(_ context.Context, _, _, _ string) (string, error) {
@@ -239,6 +330,10 @@ func (s *MemoryStore) ListAgentGroups(_ context.Context, _ string, _, _ int) ([]
 
 func (s *MemoryStore) UpsertAgentGroup(_ context.Context, group domain.AgentGroup) (domain.AgentGroup, error) {
 	return group, nil
+}
+
+func (s *MemoryStore) DeleteAgentGroup(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func (s *MemoryStore) AddAgentToGroup(_ context.Context, _, _, _ string) error {
@@ -299,4 +394,58 @@ func (s *MemoryStore) ListTenantConfigs(_ context.Context, _ string, _, _ int) (
 
 func (s *MemoryStore) UpsertTenantConfig(_ context.Context, item domain.TenantConfig) (domain.TenantConfig, error) {
 	return item, nil
+}
+
+func (s *MemoryStore) ListFAQs(_ context.Context, _ string, _ bool, _, _ int) ([]domain.FAQ, error) {
+	return nil, nil
+}
+
+func (s *MemoryStore) ReplaceFAQs(_ context.Context, tenantID string, common bool, items []domain.FAQ) ([]domain.FAQ, error) {
+	for i := range items {
+		if items[i].FAQID == "" {
+			items[i].FAQID = uuid.NewString()
+		}
+		items[i].ID = items[i].FAQID
+		items[i].TenantID = tenantID
+		items[i].IsCommon = common
+	}
+	return items, nil
+}
+
+func (s *MemoryStore) GetCustomerTags(_ context.Context, tenantID, appID, userID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tags := s.customerTags[customerTagKey(tenantID, appID, userID)]
+	return append([]string(nil), tags...), nil
+}
+
+func (s *MemoryStore) ReplaceCustomerTags(_ context.Context, tenantID, appID, userID string, tags []string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	normalized := normalizeTags(tags)
+	s.customerTags[customerTagKey(tenantID, appID, userID)] = normalized
+	return append([]string(nil), normalized...), nil
+}
+
+func customerTagKey(tenantID, appID, userID string) string {
+	return tenantID + ":" + appID + ":" + userID
+}
+
+func normalizeTags(tags []string) []string {
+	seen := make(map[string]struct{}, len(tags))
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		value := strings.TrimSpace(tag)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }

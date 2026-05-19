@@ -29,6 +29,12 @@ func Middleware() gin.HandlerFunc {
 			AppID:    c.GetHeader(HeaderAppID),
 		}
 		if tc.TenantID == "" {
+			tc.TenantID = c.Query("tenant_id")
+		}
+		if tc.AppID == "" {
+			tc.AppID = c.Query("app_id")
+		}
+		if tc.TenantID == "" {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Tenant-ID"})
 			return
 		}

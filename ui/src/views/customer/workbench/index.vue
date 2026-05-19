@@ -11,7 +11,7 @@
 					<el-switch v-model="online" active-text="在线" inactive-text="离线" @change="toggleOnline" />
 				</div>
 				<div class="agent-form">
-					<el-select v-model="currentAgentId" filterable placeholder="选择坐席" @change="syncAgent">
+					<el-select v-model="currentAgentId" filterable placeholder="选择坐席" :disabled="agentLocked" @change="syncAgent">
 						<el-option v-for="agent in agents" :key="agent.agent_id" :label="agentLabel(agent)" :value="agent.agent_id" />
 					</el-select>
 					<el-select v-model="currentGroupId" filterable placeholder="选择坐席组">
@@ -90,8 +90,10 @@ import {
 	AgentGroup,
 	ChatMessage,
 	acceptSession,
+	getCustomerAssetUrl,
 	getCurrentTenantId,
 	getCustomerWsUrl,
+	getMyAgent,
 	listAgentGroups,
 	listAgents,
 	listMessages,
@@ -112,6 +114,7 @@ const messages = ref<ChatMessage[]>([]);
 const activeSession = ref<SessionItem>();
 const currentAgentId = ref('');
 const currentGroupId = ref('default');
+const agentLocked = ref(false);
 const status = ref('serving');
 const online = ref(false);
 const draft = ref('');
@@ -181,10 +184,7 @@ const displayMessages = computed(() => {
 });
 
 const messageImageUrl = (url: string) => {
-	if (!url) return '';
-	if (/^https?:\/\//i.test(url)) return url;
-	if (url.startsWith('/uploads/')) return `/customer-api${url}`;
-	return url;
+	return getCustomerAssetUrl(url);
 };
 
 const insertEmoji = (emoji: string) => {
@@ -243,6 +243,16 @@ const syncAgent = () => {
 	connectAgentSocket();
 };
 
+const currentGFastUserID = () => {
+	const userInfo = Session.get('userInfo') || {};
+	return Number(userInfo.id || userInfo.userId || userInfo.user_id || 0);
+};
+
+const isFrontUser = () => {
+	const userInfo = Session.get('userInfo') || {};
+	return Number(userInfo.isAdmin ?? userInfo.is_admin ?? 1) === 0;
+};
+
 const appendMessage = async (message: ChatMessage, options?: { refreshSessions?: boolean }) => {
 	if (activeSession.value?.id === message.session_id && !messages.value.some((item) => item.id === message.id || item.client_msg_id === message.client_msg_id)) {
 		messages.value.push(message);
@@ -292,10 +302,27 @@ const loadBase = async () => {
 	agents.value = agentRes.items || [];
 	groups.value = groupRes.items || [];
 	if (!currentGroupId.value && groups.value[0]?.group_id) currentGroupId.value = groups.value[0].group_id;
+	agentLocked.value = false;
+	if (isFrontUser()) {
+		try {
+			const myAgent = await getMyAgent();
+			agents.value = [myAgent];
+			currentAgentId.value = myAgent.agent_id || '';
+			agentLocked.value = true;
+			connectAgentSocket();
+			return;
+		} catch {
+			currentAgentId.value = '';
+			agentLocked.value = true;
+			ElMessage.warning('当前账号还没有绑定客服坐席，请联系租户管理员在坐席管理中绑定');
+			return;
+		}
+	}
 	if (!currentAgentId.value) {
 		const userInfo = Session.get('userInfo') || {};
 		const username = userInfo.userName || userInfo.user_name;
-		const matched = agents.value.find((item) => item.username === username);
+		const gfastUserID = currentGFastUserID();
+		const matched = agents.value.find((item) => (gfastUserID && item.gfast_user_id === gfastUserID) || item.username === username);
 		currentAgentId.value = matched?.agent_id || agents.value[0]?.agent_id || '';
 	}
 	connectAgentSocket();

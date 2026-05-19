@@ -1,3 +1,9 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  .form-input {
+    @apply w-full px-3 py-2 bg-slate-50 rounded-xl border border-slate-100 text-sm text-slate-700 outline-none focus:border-brand-300 transition-colors;
+  }
+}

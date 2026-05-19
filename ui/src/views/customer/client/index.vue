@@ -71,6 +71,7 @@ import {
 	ChatMessage,
 	createSession,
 	getAgent,
+	getCustomerAssetUrl,
 	getCurrentAppId,
 	getCurrentTenantId,
 	getCustomerWsUrl,
@@ -153,10 +154,7 @@ const displayMessages = computed(() => {
 });
 
 const messageImageUrl = (url: string) => {
-	if (!url) return '';
-	if (/^https?:\/\//i.test(url)) return url;
-	if (url.startsWith('/uploads/')) return `/customer-api${url}`;
-	return url;
+	return getCustomerAssetUrl(url);
 };
 
 const insertEmoji = (emoji: string) => {

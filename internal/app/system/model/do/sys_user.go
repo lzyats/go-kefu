@@ -28,6 +28,7 @@ type SysUser struct {
 	DeptId        interface{}
 	Remark        interface{}
 	IsAdmin       interface{}
+	UserType      interface{}
 	Address       interface{}
 	Describe      interface{}
 	LastLoginIp   interface{}

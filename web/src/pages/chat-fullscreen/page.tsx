@@ -1,8 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ChatHeader from './components/ChatHeader';
 import MessageBubble from './components/MessageBubble';
 import ChatInput from './components/ChatInput';
-import { getThemeClasses, type ChatTheme, themeLabels, themeList } from '../../lib/chatTheme';
+import { getThemeClasses, hasSavedChatTheme, normalizeChatTheme, readSavedChatTheme, saveChatTheme, type ChatTheme, themeLabels, themeList } from '../../lib/chatTheme';
+import { createSession, ChatMessage, getAssetUrl, getPublicConfig, getWsUrl, listSessionMessages, PublicFAQ, sendWsMessage, SessionItem, uploadChatImage } from '@/lib/customerApi';
+import { notifyMessage, stopFlashTitle, unlockSound } from '@/lib/notify';
 
 export type MessageSender = 'user' | 'bot' | 'agent';
 export type MessageType = 'text' | 'image' | 'file' | 'system';
@@ -23,175 +25,330 @@ export interface Message {
   status?: 'sending' | 'sent' | 'failed';
 }
 
-const quickReplies = [
-  '产品定价',
-  '技术支持',
-  '账户问题',
-  '功能咨询',
-  '申请发票',
-  '退款查询',
-];
-
-const botResponses: Record<string, string> = {
-  '产品定价': '我们提供三种方案：基础版¥99/月（5坐席）、专业版¥299/月（20坐席）、企业版按需定制。需要详细了解吗？',
-  '技术支持': '技术支持团队工作日 9:00-21:00 在线。您可以描述遇到的具体问题，我会尽力帮您解决。',
-  '账户问题': '常见的账户问题包括：密码重置、权限调整、账户注销等。请问您遇到的是哪种情况？',
-  '功能咨询': 'ChatFlow 支持实时聊天、AI机器人、FAQ检索、多语言、满意度评分、数据分析等功能。您对哪方面感兴趣？',
-  '申请发票': '您可以在订单详情页点击"申请发票"，填写抬头、税号等信息后提交，电子发票将在24小时内发送至您的邮箱。',
-  '退款查询': '退款一般会在3-7个工作日内原路返回，具体时间视银行处理速度而定。如有异常请联系人工客服。',
-  '你好': '您好！我是 ChatFlow 智能助手，很高兴为您服务。请问有什么可以帮您？',
-  'hello': 'Hello! I am the ChatFlow AI assistant. How can I help you today?',
-};
-
-function getBotReply(input: string): string {
-  const lower = input.toLowerCase();
-  for (const key of Object.keys(botResponses)) {
-    if (lower.includes(key.toLowerCase())) return botResponses[key];
-  }
-  if (lower.includes('你好') || lower.includes('您好')) return botResponses['你好'];
-  if (lower.includes('hi') || lower.includes('hello')) return botResponses['hello'];
-  return '抱歉，我可能没有完全理解您的问题。您可以尝试点击下方快捷回复，或输入"人工"转接人工客服。';
+interface ChatCache {
+  visitorName: string;
+  session: SessionItem;
+  savedAt: number;
 }
 
-function formatFileSize(bytes: number): string {
+const cacheKeyPrefix = 'kefu:web:chat_session';
+const visitorKeyPrefix = 'kefu:web:visitor_name';
+const cacheTTL = 24 * 60 * 60 * 1000;
+
+const welcomeMessages: Message[] = [
+  {
+    id: 'welcome',
+    type: 'system',
+    sender: 'bot',
+    content: '客服已接入会话',
+    timestamp: new Date(Date.now() - 60000),
+  },
+  {
+    id: 'welcome2',
+    type: 'text',
+    sender: 'bot',
+    content: '您好！我是 ChatFlow 智能客服助手，请问有什么可以帮您？您也可以直接输入"人工"转接人工客服。',
+    timestamp: new Date(Date.now() - 55000),
+    status: 'sent',
+  },
+];
+
+function generateVisitorName() {
+  const externalUserID = getStableExternalUserID();
+  if (externalUserID) return externalUserID;
+  const stored = localStorage.getItem(getScopedStorageKey(visitorKeyPrefix));
+  if (stored) return stored;
+  const name = `访客${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  localStorage.setItem(getScopedStorageKey(visitorKeyPrefix), name);
+  return name;
+}
+
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
-function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
 export default function ChatFullscreen() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      type: 'system',
-      sender: 'bot',
-      content: '客服已接入会话',
-      timestamp: new Date(Date.now() - 60000),
-    },
-    {
-      id: 'welcome2',
-      type: 'text',
-      sender: 'bot',
-      content: '您好！我是 ChatFlow 智能客服助手，请问有什么可以帮您？您也可以直接输入"人工"转接人工客服。',
-      timestamp: new Date(Date.now() - 55000),
-      status: 'sent',
-    },
-  ]);
+  const [brandName, setBrandName] = useState('ChatFlow');
+  const [faqs, setFaqs] = useState<PublicFAQ[]>([]);
+  const [messages, setMessages] = useState<Message[]>(welcomeMessages);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [theme, setTheme] = useState<ChatTheme>('fresh');
+  const [theme, setTheme] = useState<ChatTheme>(() => readSavedChatTheme());
   const [satisfaction, setSatisfaction] = useState(0);
   const [showSatisfaction, setShowSatisfaction] = useState(false);
   const [showThemeDrawer, setShowThemeDrawer] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionItem | null>(null);
+  const [visitorName, setVisitorName] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | undefined>(undefined);
 
   const t = getThemeClasses(theme);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const quickReplyItems = faqs.slice(0, 6).map((item) => item.question);
 
   useEffect(() => {
-    scrollToBottom();
+    loadPublicConfig();
+    const name = generateVisitorName();
+    setVisitorName(name);
+    const cache = readCache();
+    if (cache && hasExternalProfile()) {
+      void restoreExternalSession(name);
+    } else if (cache) {
+      setVisitorName(cache.visitorName);
+      setSession(cache.session);
+      void restoreCachedSession(cache);
+    } else if (getExternalUserID()) {
+      void restoreExternalSession(name);
+    }
+    return () => {
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  async function loadPublicConfig() {
+    try {
+      const config = await getPublicConfig({ force: true });
+      const nextName = config.display_name || 'ChatFlow';
+      setBrandName(nextName);
+      setFaqs(config.faqs || []);
+      if (!hasSavedChatTheme() && config.chat_theme) setTheme(normalizeChatTheme(config.chat_theme));
+      setMessages((old) => old.map((item) => item.id === 'welcome2' ? {
+        ...item,
+        content: `您好！我是 ${nextName} 智能客服助手，请问有什么可以帮您？您也可以直接输入"人工"转接人工客服。`,
+      } : item));
+    } catch {
+      setBrandName('ChatFlow');
+    }
+  }
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
-  const addMessage = (msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: Date }) => {
+  function addMessage(msg: Omit<Message, 'id' | 'timestamp'> & { id?: string; timestamp?: Date }) {
     const newMsg: Message = {
       ...msg,
-      id: generateId(),
+      id: msg.id || generateId(),
       timestamp: msg.timestamp || new Date(),
     };
     setMessages((prev) => [...prev, newMsg]);
-  };
+    return newMsg;
+  }
 
-  const sendBotReply = (userContent: string, delay = 1200) => {
-    setIsTyping(true);
-    setTimeout(() => {
-      setIsTyping(false);
-      const reply = getBotReply(userContent);
-      addMessage({
-        type: 'text',
-        sender: 'bot',
-        content: reply,
-        status: 'sent',
+  function addSystemMessage(content: string) {
+    addMessage({ type: 'system', sender: 'bot', content, status: 'sent' });
+  }
+
+  async function ensureSession() {
+    if (session) return session;
+    const name = visitorName || generateVisitorName();
+    setVisitorName(name);
+    const created = await createSession(name, 'web', '', getSessionDisplayName(name), getExternalUserAvatar());
+    setSession(created);
+    writeCache({ visitorName: name, session: created, savedAt: Date.now() });
+    connect(created, name);
+    return created;
+  }
+
+  async function restoreCachedSession(cache: ChatCache) {
+    writeCache({ ...cache, savedAt: Date.now() });
+    try {
+      const res = await listSessionMessages(cache.session.id, 0, 200);
+      const history = (res.items || []).map(mapChatMessage).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      if (history.length > 0) {
+        setMessages(history);
+      }
+    } catch {
+      // 历史消息拉取失败时仍然续接 WebSocket，不阻断客户继续咨询。
+    }
+    connect(cache.session, cache.visitorName);
+  }
+
+  async function restoreExternalSession(name: string) {
+    try {
+      const current = await createSession(name, 'web', '', getSessionDisplayName(name), getExternalUserAvatar());
+      setSession(current);
+      writeCache({ visitorName: name, session: current, savedAt: Date.now() });
+      await restoreCachedSession({ visitorName: name, session: current, savedAt: Date.now() });
+    } catch {
+      // 外部用户自动续接失败时保留欢迎页，用户发送消息时仍会再次尝试创建/续接。
+    }
+  }
+
+  function connect(current: SessionItem, name: string) {
+    if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
+    const ws = new WebSocket(getWsUrl('customer', name, `customer-${name}`));
+    wsRef.current = ws;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ event: 'ping' }));
+    };
+    ws.onclose = () => {
+      if (wsRef.current === ws) {
+        reconnectTimerRef.current = window.setTimeout(() => connect(current, name), 3000);
+      }
+    };
+    ws.onmessage = (event) => {
+      const envelope = JSON.parse(event.data);
+      if (envelope.event !== 'message') return;
+      const message = parseWsData<ChatMessage>(envelope.data);
+      setMessages((old) => {
+        if (old.some((item) => item.id === message.id || item.id === message.client_msg_id)) {
+          return old.map((item) => item.id === message.client_msg_id ? mapChatMessage(message) : item);
+        }
+        return [...old, mapChatMessage(message)].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       });
-    }, delay);
-  };
+      if (message.sender_type === 'agent') {
+        notifyMessage('客服回复了您', message.msg_type === 'image' ? '[图片]' : message.content.slice(0, 60));
+        stopFlashTitle();
+      }
+      const nextSession = {
+        ...current,
+        status: message.sender_type === 'agent' ? 'serving' : current.status,
+        agent_id: message.sender_type === 'agent' ? message.sender_id : current.agent_id,
+      };
+      writeCache({ visitorName: name, session: nextSession, savedAt: Date.now() });
+      setSession((old) => old ? { ...old, ...nextSession } : nextSession);
+    };
+  }
 
-  const handleSendText = () => {
+  async function waitForSocket() {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const timer = window.setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          window.clearInterval(timer);
+          resolve();
+        }
+        if (Date.now() - start > 3000) {
+          window.clearInterval(timer);
+          reject(new Error('WebSocket 未连接'));
+        }
+      }, 50);
+    });
+  }
+
+  async function handleSendText() {
     const text = inputValue.trim();
     if (!text) return;
-
-    addMessage({
-      type: 'text',
-      sender: 'user',
-      content: text,
-      status: 'sent',
-    });
+    const clientMsgID = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setInputValue('');
-
-    if (text.includes('人工')) {
-      addMessage({
-        type: 'system',
-        sender: 'bot',
-        content: '正在为您转接人工客服，请稍候...',
-      });
-      setTimeout(() => {
-        addMessage({
-          type: 'text',
-          sender: 'agent',
-          content: '您好！我是人工客服小李，已收到您的会话，请问有什么可以帮您？',
-          status: 'sent',
-        });
-      }, 1500);
-      return;
+    addMessage({ id: clientMsgID, type: 'text', sender: 'user', content: text, status: 'sending' });
+    try {
+      const current = await ensureSession();
+      await waitForSocket();
+      sendWsMessage(wsRef.current, { session_id: current.id, content: text, msg_type: 'text', client_msg_id: clientMsgID });
+    } catch (err) {
+      setMessages((old) => old.map((item) => item.id === clientMsgID ? { ...item, status: 'failed' } : item));
+      addSystemMessage(err instanceof Error ? err.message : '消息发送失败');
     }
+  }
 
-    sendBotReply(text);
-  };
-
-  const handleQuickReply = (text: string) => {
-    addMessage({
-      type: 'text',
-      sender: 'user',
-      content: text,
-      status: 'sent',
-    });
-    sendBotReply(text, 800);
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    addMessage({
-      type: 'image',
-      sender: 'user',
-      content: url,
-      fileInfo: { name: file.name, size: formatFileSize(file.size), type: file.type },
-      status: 'sent',
-    });
-    setIsTyping(true);
-    setTimeout(() => {
-      setIsTyping(false);
+  function handleQuickReply(text: string) {
+    const faq = faqs.find((item) => item.question === text);
+    if (faq) {
       addMessage({
         type: 'text',
-        sender: 'bot',
-        content: '已收到您发送的图片，请问有什么需要我帮您解答的吗？',
+        sender: 'user',
+        content: faq.question,
         status: 'sent',
       });
-    }, 1500);
-    e.target.value = '';
-  };
+      setIsTyping(true);
+      window.setTimeout(() => {
+        setIsTyping(false);
+        addMessage({
+          type: 'text',
+          sender: 'bot',
+          content: faq.answer,
+          status: 'sent',
+        });
+      }, 500);
+      return;
+    }
+    setInputValue(text);
+    window.setTimeout(() => {
+      void handleSendTextWithValue(text);
+    });
+  }
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  async function handleSendTextWithValue(text: string) {
+    const clientMsgID = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setInputValue('');
+    addMessage({ id: clientMsgID, type: 'text', sender: 'user', content: text, status: 'sending' });
+    try {
+      const current = await ensureSession();
+      await waitForSocket();
+      sendWsMessage(wsRef.current, { session_id: current.id, content: text, msg_type: 'text', client_msg_id: clientMsgID });
+    } catch (err) {
+      setMessages((old) => old.map((item) => item.id === clientMsgID ? { ...item, status: 'failed' } : item));
+      addSystemMessage(err instanceof Error ? err.message : '消息发送失败');
+    }
+  }
+
+  async function handleTransferToAgent() {
+    const clientMsgID = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    addSystemMessage('正在为您转接人工客服，请稍候...');
+    addMessage({
+      id: clientMsgID,
+      type: 'text',
+      sender: 'user',
+      content: '人工',
+      status: 'sending',
+    });
+    try {
+      const current = await ensureSession();
+      await waitForSocket();
+      sendWsMessage(wsRef.current, { session_id: current.id, content: '人工', msg_type: 'text', client_msg_id: clientMsgID });
+    } catch (err) {
+      setMessages((old) => old.map((item) => item.id === clientMsgID ? { ...item, status: 'failed' } : item));
+      addSystemMessage(err instanceof Error ? err.message : '转人工失败，请稍后重试');
+    }
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const localUrl = URL.createObjectURL(file);
+    const clientMsgID = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    addMessage({
+      id: clientMsgID,
+      type: 'image',
+      sender: 'user',
+      content: localUrl,
+      fileInfo: { name: file.name, size: formatFileSize(file.size), type: file.type },
+      status: 'sending',
+    });
+    try {
+      const current = await ensureSession();
+      const uploaded = await uploadChatImage(file);
+      await waitForSocket();
+      sendWsMessage(wsRef.current, { session_id: current.id, content: uploaded.url, msg_type: 'image', client_msg_id: clientMsgID });
+    } catch (err) {
+      setMessages((old) => old.map((item) => item.id === clientMsgID ? { ...item, status: 'failed' } : item));
+      addSystemMessage(err instanceof Error ? err.message : '图片发送失败');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     addMessage({
@@ -199,61 +356,49 @@ export default function ChatFullscreen() {
       sender: 'user',
       content: file.name,
       fileInfo: { name: file.name, size: formatFileSize(file.size), type: file.type },
-      status: 'sent',
+      status: 'failed',
     });
-    setIsTyping(true);
-    setTimeout(() => {
-      setIsTyping(false);
-      addMessage({
-        type: 'text',
-        sender: 'bot',
-        content: `已收到您发送的文件「${file.name}」，我们会尽快处理。如有疑问请继续提问。`,
-        status: 'sent',
-      });
-    }, 1500);
+    addSystemMessage('当前仅支持图片上传，文件发送将在后续开放。');
     e.target.value = '';
-  };
+  }
 
-  const handleEmojiSelect = (emoji: string) => {
+  function handleEmojiSelect(emoji: string) {
     setInputValue((prev) => prev + emoji);
-  };
+  }
 
-  const handleSatisfaction = (star: number) => {
+  function handleSatisfaction(star: number) {
     setSatisfaction(star);
     setShowSatisfaction(false);
     addMessage({
       type: 'text',
       sender: 'bot',
-      content: `感谢您的评价！${star >= 4 ? '很高兴帮到您，如有其他问题随时联系！' : '非常抱歉体验未达预期，我们会持续改进。'}`,
+      content: `感谢您的评价，${star >= 4 ? '很高兴帮到您，如有其他问题随时联系！' : '非常抱歉体验未达预期，我们会持续改进。'}`,
       status: 'sent',
     });
-  };
+  }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSendText();
+      void handleSendText();
     }
-  };
+  }
 
-  const handleToggleTheme = () => {
-    setShowThemeDrawer(true);
-  };
-
-  const cycleTheme = () => {
-    const idx = themeList.indexOf(theme);
-    setTheme(themeList[(idx + 1) % themeList.length]);
-  };
+  function applyTheme(nextTheme: ChatTheme) {
+    setTheme(nextTheme);
+    saveChatTheme(nextTheme);
+  }
 
   return (
-    <div className={`h-screen flex flex-col ${t.pageBg} font-sans overflow-hidden`}>
+    <div className={`h-screen flex flex-col ${t.pageBg} font-sans overflow-hidden`} onClick={unlockSound}>
       <ChatHeader
         theme={theme}
-        onToggleTheme={cycleTheme}
+        brandName={brandName}
+        onThemeChange={applyTheme}
         onEndSession={() => setShowSatisfaction(true)}
+        onTransferToAgent={() => void handleTransferToAgent()}
       />
 
-      {/* Theme switcher hint */}
       <div
         className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-1.5 border-b ${t.headerBorder} ${t.headerBg} cursor-pointer`}
         onClick={() => setShowThemeDrawer(true)}
@@ -264,7 +409,6 @@ export default function ChatFullscreen() {
         <i className={`ri-arrow-down-s-line text-[11px] ${t.subText}`} />
       </div>
 
-      {/* Messages area */}
       <div className={`flex-1 overflow-y-auto ${t.msgAreaBg} scroll-smooth`}>
         <div className="px-4 py-3 space-y-1">
           {messages.map((msg) => (
@@ -291,7 +435,6 @@ export default function ChatFullscreen() {
             </div>
           )}
 
-          {/* Satisfaction card */}
           {showSatisfaction && (
             <div className="flex justify-center py-3">
               <div className={`max-w-xs w-full p-4 rounded-2xl shadow-soft border ${t.satisfactionBg} ${t.satisfactionBorder}`}>
@@ -325,10 +468,9 @@ export default function ChatFullscreen() {
         </div>
       </div>
 
-      {/* Quick replies */}
-      {messages.length < 5 && !showSatisfaction && (
+      {messages.length < 5 && !showSatisfaction && quickReplyItems.length > 0 && (
         <div className={`flex-shrink-0 px-4 py-2 flex gap-2 overflow-x-auto ${t.msgAreaBg}`}>
-          {quickReplies.map((reply) => (
+          {quickReplyItems.map((reply) => (
             <button
               key={reply}
               onClick={() => handleQuickReply(reply)}
@@ -343,7 +485,7 @@ export default function ChatFullscreen() {
       <ChatInput
         value={inputValue}
         onChange={setInputValue}
-        onSend={handleSendText}
+        onSend={() => void handleSendText()}
         onKeyDown={handleKeyDown}
         onImageClick={() => imageInputRef.current?.click()}
         onFileClick={() => fileInputRef.current?.click()}
@@ -351,7 +493,6 @@ export default function ChatFullscreen() {
         theme={theme}
       />
 
-      {/* Hidden file inputs */}
       <input
         ref={imageInputRef}
         type="file"
@@ -367,7 +508,6 @@ export default function ChatFullscreen() {
         onChange={handleFileUpload}
       />
 
-      {/* Image preview modal */}
       {previewImage && (
         <div
           className={`fixed inset-0 z-[60] ${t.overlayBg} flex items-center justify-center p-4`}
@@ -390,7 +530,6 @@ export default function ChatFullscreen() {
         </div>
       )}
 
-      {/* Theme drawer */}
       {showThemeDrawer && (
         <>
           <div className="fixed inset-0 z-[55] bg-black/40" onClick={() => setShowThemeDrawer(false)} />
@@ -411,7 +550,7 @@ export default function ChatFullscreen() {
                 return (
                   <button
                     key={tk}
-                    onClick={() => { setTheme(tk); setShowThemeDrawer(false); }}
+                    onClick={() => { applyTheme(tk); setShowThemeDrawer(false); }}
                     className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
                       isActive
                         ? `${t.settingItemActiveBorder} ${t.settingItemActiveBg} ${t.settingItemActiveText}`
@@ -433,4 +572,89 @@ export default function ChatFullscreen() {
       )}
     </div>
   );
+}
+
+function parseWsData<T>(data: unknown): T {
+  return typeof data === 'string' ? JSON.parse(data) as T : data as T;
+}
+
+function readCache(): ChatCache | null {
+  const raw = localStorage.getItem(getScopedStorageKey(cacheKeyPrefix));
+  if (!raw) return null;
+  try {
+    const cache = JSON.parse(raw) as ChatCache;
+    if (Date.now() - cache.savedAt > cacheTTL) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(cache: ChatCache) {
+  localStorage.setItem(getScopedStorageKey(cacheKeyPrefix), JSON.stringify(cache));
+}
+
+function getScopedStorageKey(prefix: string) {
+  const params = new URLSearchParams(window.location.search);
+  const tenantID = params.get('tenant_id') || localStorage.getItem('kefu:web:tenant_id') || 'tenant-demo';
+  const appID = params.get('app_id') || localStorage.getItem('kefu:web:app_id') || 'default';
+  const userID = getStableExternalUserID() || 'anonymous';
+  return `${prefix}:${tenantID}:${appID}:${userID}`;
+}
+
+function getExternalUserID() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get('user_id') ||
+    params.get('userId') ||
+    params.get('uid') ||
+    ''
+  ).trim();
+}
+
+function getExternalUserName() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get('user_name') ||
+    params.get('userName') ||
+    params.get('display_name') ||
+    params.get('nickname') ||
+    params.get('name') ||
+    params.get('username') ||
+    ''
+  ).trim();
+}
+
+function getExternalUserAvatar() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get('avatar') ||
+    params.get('avatar_url') ||
+    params.get('avatarUrl') ||
+    params.get('user_avatar') ||
+    ''
+  ).trim();
+}
+
+function hasExternalProfile() {
+  return !!(getExternalUserName() || getExternalUserAvatar());
+}
+
+function getStableExternalUserID() {
+  return getExternalUserID() || getExternalUserName();
+}
+
+function getSessionDisplayName(userID: string) {
+  return getExternalUserName() || (getExternalUserID() ? '' : userID);
+}
+
+function mapChatMessage(message: ChatMessage): Message {
+  return {
+    id: message.id || message.client_msg_id,
+    type: message.msg_type === 'image' ? 'image' : 'text',
+    sender: message.sender_type === 'customer' ? 'user' : 'agent',
+    content: message.msg_type === 'image' ? getAssetUrl(message.content) : message.content,
+    timestamp: message.send_time ? new Date(message.send_time) : new Date(),
+    status: 'sent',
+  };
 }

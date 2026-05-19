@@ -26,6 +26,7 @@ type SysUser struct {
 	DeptId        uint64      `json:"deptId"        description:"閮ㄩ棬id"`
 	Remark        string      `json:"remark"        description:"澶囨敞"`
 	IsAdmin       int         `json:"isAdmin"       description:"鏄惁鍚庡彴绠＄悊鍛?1 鏄? 0   鍚?`
+	UserType      int         `json:"userType"      description:"用户类型：0客户用户，1租户管理员，2客服坐席"`
 	Address       string      `json:"address"       description:"鑱旂郴鍦板潃"`
 	Describe      string      `json:"describe"      description:"鎻忚堪淇℃伅"`
 	LastLoginIp   string      `json:"lastLoginIp"   description:"鏈€鍚庣櫥褰昳p"`

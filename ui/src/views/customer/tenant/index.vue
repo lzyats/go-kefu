@@ -7,30 +7,46 @@
 				<el-button @click="loadData">刷新</el-button>
 			</div>
 			<el-table v-loading="loading" :data="items" style="width: 100%">
-				<el-table-column prop="id" label="租户ID" min-width="180" show-overflow-tooltip />
+				<el-table-column prop="id" label="租户ID" min-width="160" show-overflow-tooltip />
 				<el-table-column prop="name" label="租户名称" min-width="160" />
+				<el-table-column prop="agent_limit" label="坐席数" width="100" />
 				<el-table-column prop="status" label="状态" width="120">
 					<template #default="{ row }">
 						<el-tag :type="row.status === 'enabled' ? 'success' : 'info'">{{ row.status }}</el-tag>
 					</template>
 				</el-table-column>
 				<el-table-column prop="created_at" label="创建时间" min-width="180" show-overflow-tooltip />
-				<el-table-column label="操作" width="260">
+				<el-table-column label="操作" width="280">
 					<template #default="{ row }">
 						<el-button text type="primary" @click="applyTenant(row)">应用</el-button>
 						<el-button text type="primary" @click="openAdminDialog(row)">绑定用户</el-button>
 						<el-button text type="primary" @click="openDialog(row)">编辑</el-button>
+						<el-button text type="danger" @click="submitDelete(row)">删除</el-button>
 					</template>
 				</el-table-column>
 			</el-table>
 		</el-card>
-		<el-dialog v-model="dialog.visible" :title="dialog.form.id ? '编辑租户' : '新增租户'" width="520px">
-			<el-form label-width="90px">
-				<el-form-item label="租户ID">
-					<el-input v-model="dialog.form.id" placeholder="留空自动生成" />
+
+		<el-dialog v-model="dialog.visible" :title="dialog.isCreate ? '新增租户' : '编辑租户'" width="560px">
+			<el-form label-width="110px">
+				<el-form-item v-if="dialog.isCreate" label="租户ID">
+					<el-alert title="系统将自动生成 12 位不重复数字，并同步作为该租户的系统用户ID。" type="info" :closable="false" show-icon />
 				</el-form-item>
-				<el-form-item label="租户名称">
-					<el-input v-model="dialog.form.name" />
+				<el-form-item v-else label="租户ID">
+					<el-input v-model="dialog.form.id" disabled />
+				</el-form-item>
+				<el-form-item label="租户名称" required>
+					<el-input v-model="dialog.form.name" placeholder="请输入租户名称" />
+				</el-form-item>
+				<el-form-item label="坐席数量" required>
+					<el-input-number v-model="dialog.form.agent_limit" :min="1" :max="999" :step="1" controls-position="right" style="width: 180px" />
+					<span class="form-tip">租户前端自助新增坐席时按这里限制</span>
+				</el-form-item>
+				<el-form-item v-if="dialog.isCreate" label="用户名" required>
+					<el-input v-model="dialog.form.admin_username" placeholder="请输入租户登录用户名" />
+				</el-form-item>
+				<el-form-item v-if="dialog.isCreate" label="登录密码" required>
+					<el-input v-model="dialog.form.admin_password" type="password" show-password placeholder="请输入租户登录密码" />
 				</el-form-item>
 				<el-form-item label="状态">
 					<el-select v-model="dialog.form.status" style="width: 100%">
@@ -44,6 +60,7 @@
 				<el-button type="primary" @click="submit">保存</el-button>
 			</template>
 		</el-dialog>
+
 		<el-dialog v-model="adminDialog.visible" title="绑定后台用户" width="760px">
 			<el-descriptions :column="2" border class="mb15">
 				<el-descriptions-item label="租户ID">{{ adminDialog.tenant?.id }}</el-descriptions-item>
@@ -93,7 +110,17 @@
 import { onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TenantBar from '/@/views/customer/components/TenantBar.vue';
-import { bindTenantAdmin, listTenantAdmins, listTenants, saveTenant, setCurrentTenantId, Tenant, TenantAdmin, unbindTenantAdmin } from '/@/api/customer/admin';
+import {
+	bindTenantAdmin,
+	deleteTenant,
+	listTenantAdmins,
+	listTenants,
+	saveTenant,
+	setCurrentTenantId,
+	Tenant,
+	TenantAdmin,
+	unbindTenantAdmin,
+} from '/@/api/customer/admin';
 import { getUserList } from '/@/api/system/user';
 
 interface GFastUser {
@@ -112,7 +139,8 @@ const admins = ref<TenantAdmin[]>([]);
 const users = ref<GFastUser[]>([]);
 const dialog = reactive({
 	visible: false,
-	form: { id: '', name: '', status: 'enabled' } as Tenant,
+	isCreate: true,
+	form: { id: '', name: '', status: 'enabled', agent_limit: 3, admin_username: '', admin_password: '' } as Tenant,
 });
 const adminDialog = reactive({
 	visible: false,
@@ -132,7 +160,10 @@ const loadData = async () => {
 };
 
 const openDialog = (row?: Tenant) => {
-	dialog.form = row ? { ...row } : { id: '', name: '', status: 'enabled' };
+	dialog.isCreate = !row;
+	dialog.form = row
+		? { ...row, admin_username: '', admin_password: '', agent_limit: row.agent_limit || 3 }
+		: { id: '', name: '', status: 'enabled', agent_limit: 3, admin_username: '', admin_password: '' };
 	dialog.visible = true;
 };
 
@@ -206,9 +237,41 @@ const submitUnbind = async (row: TenantAdmin) => {
 	loadTenantAdmins();
 };
 
+const submitDelete = async (row: Tenant) => {
+	if (!row.id) return;
+	await ElMessageBox.confirm(`确认删除租户「${row.name || row.id}」？删除后该租户登录用户、渠道、坐席、坐席组和配置会同步停用。`, '删除租户', {
+		type: 'warning',
+		confirmButtonText: '确认删除',
+		cancelButtonText: '取消',
+	});
+	await deleteTenant(row.id);
+	ElMessage.success('删除成功');
+	loadData();
+};
+
 const submit = async () => {
-	await saveTenant(dialog.form);
-	ElMessage.success('保存成功');
+	if (!dialog.form.name) {
+		ElMessage.warning('请填写租户名称');
+		return;
+	}
+	if (dialog.isCreate && !dialog.form.admin_password) {
+		ElMessage.warning('新增租户时必须设置登录密码');
+		return;
+	}
+	if (dialog.isCreate && !dialog.form.admin_username) {
+		ElMessage.warning('新增租户时必须设置用户名');
+		return;
+	}
+	const payload: Tenant = {
+		...dialog.form,
+		id: dialog.isCreate ? '' : dialog.form.id,
+	};
+	if (!dialog.isCreate) {
+		payload.admin_username = '';
+		payload.admin_password = '';
+	}
+	const saved = (await saveTenant(payload)) as Tenant;
+	ElMessage.success(saved?.id ? `保存成功，租户ID：${saved.id}` : '保存成功');
 	dialog.visible = false;
 	loadData();
 };
@@ -232,6 +295,12 @@ onMounted(loadData);
 	gap: 8px;
 	margin-bottom: 12px;
 	flex-wrap: wrap;
+}
+
+.form-tip {
+	margin-left: 10px;
+	color: var(--el-text-color-secondary);
+	font-size: 12px;
 }
 
 .mb15 {

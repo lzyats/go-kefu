@@ -1,9 +1,11 @@
-export default function StatsCards() {
+import type { DashboardStats } from '@/lib/customerApi';
+
+export default function StatsCards({ stats: realStats }: { stats?: DashboardStats }) {
   const stats = [
-    { label: '在线会话', value: '12', change: '+3', icon: 'ri-chat-3-line', color: 'bg-brand-500', lightColor: 'bg-brand-50 text-brand-600' },
-    { label: '待处理', value: '5', change: '-2', icon: 'ri-time-line', color: 'bg-amber-500', lightColor: 'bg-amber-50 text-amber-600' },
-    { label: '今日消息', value: '1,284', change: '+12%', icon: 'ri-message-3-line', color: 'bg-sky-500', lightColor: 'bg-sky-50 text-sky-600' },
-    { label: '满意度', value: '4.8', change: '+0.2', icon: 'ri-emotion-happy-line', color: 'bg-emerald-500', lightColor: 'bg-emerald-50 text-emerald-600' },
+    { label: '在线坐席', value: String(realStats?.online_agents ?? 0), change: '+0', icon: 'ri-customer-service-2-line', lightColor: 'bg-brand-50 text-brand-600' },
+    { label: '待处理', value: String(realStats?.waiting_sessions ?? 0), change: '+0', icon: 'ri-time-line', lightColor: 'bg-amber-50 text-amber-600' },
+    { label: '服务中', value: String(realStats?.serving_sessions ?? 0), change: '+0', icon: 'ri-chat-3-line', lightColor: 'bg-emerald-50 text-emerald-600' },
+    { label: '今日消息', value: String(realStats?.today_messages ?? 0), change: '+0', icon: 'ri-message-3-line', lightColor: 'bg-sky-50 text-sky-600' },
   ];
 
   return (

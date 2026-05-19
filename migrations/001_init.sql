@@ -1,12 +1,13 @@
-CREATE TABLE IF NOT EXISTS cs_tenant (
+﻿CREATE TABLE IF NOT EXISTS cs_tenant (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   tenant_id VARCHAR(64) NOT NULL UNIQUE,
   name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'enabled',
+  agent_limit INT NOT NULL DEFAULT 3,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at DATETIME NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_channel (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS cs_channel (
   UNIQUE KEY uk_tenant_app_key (tenant_id, app_key),
   KEY idx_tenant_channel (tenant_id, channel_type),
   KEY idx_tenant_app_group (tenant_id, app_id, default_group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_user (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS cs_user (
   deleted_at DATETIME NULL,
   UNIQUE KEY uk_tenant_user (tenant_id, app_id, user_id),
   KEY idx_tenant_phone (tenant_id, phone)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_agent (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS cs_agent (
   deleted_at DATETIME NULL,
   UNIQUE KEY uk_tenant_agent (tenant_id, agent_id),
   KEY idx_tenant_online (tenant_id, online_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_agent_group (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS cs_agent_group (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at DATETIME NULL,
   UNIQUE KEY uk_tenant_group (tenant_id, group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_agent_group_rel (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS cs_agent_group_rel (
   group_id VARCHAR(64) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_tenant_agent_group (tenant_id, agent_id, group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_session (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -108,7 +109,7 @@ CREATE TABLE IF NOT EXISTS cs_session (
   KEY idx_tenant_user_status (tenant_id, user_id, status),
   KEY idx_tenant_agent_status (tenant_id, agent_id, status),
   KEY idx_tenant_last_msg (tenant_id, last_msg_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_message (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -132,7 +133,7 @@ CREATE TABLE IF NOT EXISTS cs_message (
   UNIQUE KEY uk_tenant_client_msg (tenant_id, session_id, client_msg_id),
   UNIQUE KEY uk_tenant_session_seq (tenant_id, session_id, seq),
   KEY idx_tenant_session_time (tenant_id, session_id, send_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_outbox (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -148,7 +149,7 @@ CREATE TABLE IF NOT EXISTS cs_outbox (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_status_retry (status, next_retry_time),
   KEY idx_tenant_aggregate (tenant_id, aggregate_type, aggregate_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS cs_audit_log (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -164,4 +165,4 @@ CREATE TABLE IF NOT EXISTS cs_audit_log (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_tenant_operator (tenant_id, operator_id, created_at),
   KEY idx_tenant_resource (tenant_id, resource_type, resource_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

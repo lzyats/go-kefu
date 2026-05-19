@@ -19,6 +19,7 @@ type LoginUserRes struct {
 	UserSalt     string `orm:"user_salt"        json:"userSalt"`
 	UserStatus   uint   `orm:"user_status"      json:"userStatus"`
 	IsAdmin      int    `orm:"is_admin"         json:"isAdmin"`
+	UserType     int    `orm:"user_type"        json:"userType"`
 	Avatar       string `orm:"avatar"           json:"avatar"`
 	GoogleSecret string `orm:"google_secret"    json:"-"`
 	GoogleStatus int    `orm:"google_status"    json:"googleStatus"`

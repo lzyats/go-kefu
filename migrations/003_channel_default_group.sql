@@ -1,4 +1,4 @@
-SET @column_exists := (
+﻿SET @column_exists := (
   SELECT COUNT(*)
   FROM INFORMATION_SCHEMA.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE()

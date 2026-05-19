@@ -56,7 +56,8 @@ type SetUserReq struct {
 	RoleIds  []int64 `p:"roleIds"`
 	Sex      int     `p:"sex"`
 	Status   uint    `p:"status"`
-	IsAdmin  int     `p:"isAdmin"` // 是否后台管理员 1 是  0   否
+	IsAdmin  int     `p:"isAdmin"`  // 是否后台管理员 1 是  0   否
+	UserType *int    `p:"userType"` // 用户类型：0客户用户，1租户管理员，2客服坐席
 }
 
 // UserAddReq 添加用户参数

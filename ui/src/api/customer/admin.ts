@@ -2,8 +2,12 @@ import axios, { AxiosInstance } from 'axios';
 import { ElMessage } from 'element-plus';
 import { Session } from '/@/utils/storage';
 
+export function getCustomerApiBaseURL() {
+	return import.meta.env.VITE_CUSTOMER_API_URL || '/customer-api';
+}
+
 const customerService: AxiosInstance = axios.create({
-	baseURL: import.meta.env.VITE_CUSTOMER_API_URL || '/customer-api',
+	baseURL: getCustomerApiBaseURL(),
 	timeout: 50000,
 	headers: { 'Content-Type': 'application/json' },
 });
@@ -41,6 +45,10 @@ export interface Tenant {
 	id?: string;
 	name: string;
 	status?: string;
+	agent_limit?: number;
+	admin_username?: string;
+	admin_password?: string;
+	gfast_user_id?: number;
 	created_at?: string;
 	updated_at?: string;
 }
@@ -74,6 +82,7 @@ export interface Agent {
 	id?: string;
 	tenant_id?: string;
 	agent_id?: string;
+	gfast_user_id?: number;
 	username: string;
 	display_name: string;
 	max_sessions: number;
@@ -175,6 +184,19 @@ export interface TenantConfig {
 	updated_at?: string;
 }
 
+export interface CustomerFAQ {
+	id?: string;
+	tenant_id?: string;
+	faq_id?: string;
+	question: string;
+	answer: string;
+	is_common?: boolean;
+	status?: string;
+	sort?: number;
+	created_at?: string;
+	updated_at?: string;
+}
+
 export interface DailyReport {
 	date: string;
 	new_sessions: number;
@@ -211,7 +233,14 @@ export function setCurrentAppId(appId: string) {
 export function getCustomerWsUrl(userType: 'customer' | 'agent', userId: string, deviceId?: string) {
 	const apiUrl = import.meta.env.VITE_CUSTOMER_WS_URL || '';
 	const fallback = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8102/ws`;
-	const base = apiUrl || fallback;
+	let base = apiUrl || fallback;
+	if (base.startsWith('/')) {
+		base = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}${base}`;
+	} else if (base.startsWith('http://')) {
+		base = base.replace(/^http:\/\//, 'ws://');
+	} else if (base.startsWith('https://')) {
+		base = base.replace(/^https:\/\//, 'wss://');
+	}
 	const params = new URLSearchParams({
 		tenant_id: getCurrentTenantId(),
 		app_id: getCurrentAppId(),
@@ -220,6 +249,13 @@ export function getCustomerWsUrl(userType: 'customer' | 'agent', userId: string,
 		device_id: deviceId || `${userType}-web`,
 	});
 	return `${base}?${params.toString()}`;
+}
+
+export function getCustomerAssetUrl(url: string) {
+	if (!url) return '';
+	if (/^https?:\/\//i.test(url)) return url;
+	if (url.startsWith('/uploads/')) return `${getCustomerApiBaseURL()}${url}`;
+	return url;
 }
 
 export function createSession(data: { user_id: string; channel_id?: string; group_id?: string; priority?: number }) {
@@ -270,6 +306,10 @@ export function saveTenant(data: Tenant) {
 	return customerService.post('/admin/v1/tenants', data);
 }
 
+export function deleteTenant(tenantId: string) {
+	return customerService.delete(`/admin/v1/tenants/${tenantId}`);
+}
+
 export function listMyTenants() {
 	return customerService.get('/admin/v1/my/tenants');
 }
@@ -300,6 +340,10 @@ export function saveChannel(data: Channel) {
 
 export function listAgents(query?: PageQuery) {
 	return customerService.get('/admin/v1/agents', { params: query });
+}
+
+export function getMyAgent() {
+	return customerService.get('/admin/v1/my/agent');
 }
 
 export function saveAgent(data: Agent) {
@@ -360,4 +404,20 @@ export function listTenantConfigs(query?: PageQuery) {
 
 export function saveTenantConfig(data: TenantConfig) {
 	return customerService.post('/admin/v1/configs', data);
+}
+
+export function listTenantFAQs(query?: PageQuery) {
+	return customerService.get('/admin/v1/faqs', { params: query }) as Promise<{ items: CustomerFAQ[] }>;
+}
+
+export function saveTenantFAQs(items: CustomerFAQ[]) {
+	return customerService.post('/admin/v1/faqs', { items }) as Promise<{ items: CustomerFAQ[] }>;
+}
+
+export function listCommonFAQs() {
+	return customerService.get('/admin/v1/faqs/common') as Promise<{ items: CustomerFAQ[] }>;
+}
+
+export function saveCommonFAQs(items: CustomerFAQ[]) {
+	return customerService.post('/admin/v1/faqs/common', { items }) as Promise<{ items: CustomerFAQ[] }>;
 }

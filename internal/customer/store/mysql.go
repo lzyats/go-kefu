@@ -50,6 +50,9 @@ func (s *MySQLStore) CreateSession(ctx context.Context, session domain.Session) 
 	if session.LoginTime.IsZero() {
 		session.LoginTime = now
 	}
+	if err := s.SaveCustomerProfile(ctx, session.TenantID, session.AppID, session.UserID, session.UserName, session.UserAvatar); err != nil {
+		return domain.Session{}, err
+	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cs_session (
@@ -73,15 +76,16 @@ func (s *MySQLStore) GetSession(ctx context.Context, tenantID, sessionID string)
 	var lastMsgTime sql.NullTime
 	var createdAt, updatedAt time.Time
 	err := s.db.QueryRowContext(ctx, `
-		SELECT tenant_id, app_id, session_id, channel_id, user_id, agent_id, group_id,
-			status, priority, last_seq, last_msg_time, source_ip, user_agent, login_time,
-			created_at, updated_at
-		FROM cs_session
-		WHERE tenant_id = ? AND session_id = ? AND deleted_at IS NULL`,
+		SELECT s.tenant_id, s.app_id, s.session_id, s.channel_id, s.user_id, COALESCE(u.nickname, ''), COALESCE(u.avatar, ''),
+			s.agent_id, s.group_id, s.status, s.priority, s.last_seq, s.last_msg_time, s.source_ip,
+			s.user_agent, s.login_time, s.created_at, s.updated_at
+		FROM cs_session s
+		LEFT JOIN cs_user u ON u.tenant_id = s.tenant_id AND u.app_id = s.app_id AND u.user_id = s.user_id AND u.deleted_at IS NULL
+		WHERE s.tenant_id = ? AND s.session_id = ? AND s.deleted_at IS NULL`,
 		tenantID, sessionID,
 	).Scan(
 		&session.TenantID, &session.AppID, &session.ID, &session.ChannelID, &session.UserID,
-		&session.AgentID, &session.GroupID, &session.Status, &session.Priority, &session.LastSeq,
+		&session.UserName, &session.UserAvatar, &session.AgentID, &session.GroupID, &session.Status, &session.Priority, &session.LastSeq,
 		&lastMsgTime, &session.SourceIP, &session.UserAgent, &session.LoginTime, &createdAt, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -96,6 +100,120 @@ func (s *MySQLStore) GetSession(ctx context.Context, tenantID, sessionID string)
 	session.CreatedAt = createdAt
 	session.UpdatedAt = updatedAt
 	return session, nil
+}
+
+func (s *MySQLStore) FindActiveSessionByUser(ctx context.Context, tenantID, appID, channelID, userID string) (domain.Session, error) {
+	var session domain.Session
+	var lastMsgTime sql.NullTime
+	var createdAt, updatedAt time.Time
+	query := `
+		SELECT s.tenant_id, s.app_id, s.session_id, s.channel_id, s.user_id, COALESCE(u.nickname, ''), COALESCE(u.avatar, ''),
+			s.agent_id, s.group_id, s.status, s.priority, s.last_seq, s.last_msg_time, s.source_ip,
+			s.user_agent, s.login_time, s.created_at, s.updated_at
+		FROM cs_session s
+		LEFT JOIN cs_user u ON u.tenant_id = s.tenant_id AND u.app_id = s.app_id AND u.user_id = s.user_id AND u.deleted_at IS NULL
+		WHERE s.tenant_id = ? AND s.app_id = ? AND s.user_id = ?
+			AND s.status NOT IN ('closed', 'rated', 'timeout')
+			AND s.deleted_at IS NULL`
+	args := []any{tenantID, appID, userID}
+	if channelID != "" {
+		query += " AND s.channel_id = ?"
+		args = append(args, channelID)
+	}
+	query += " ORDER BY s.updated_at DESC LIMIT 1"
+
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&session.TenantID, &session.AppID, &session.ID, &session.ChannelID, &session.UserID,
+		&session.UserName, &session.UserAvatar, &session.AgentID, &session.GroupID, &session.Status, &session.Priority, &session.LastSeq,
+		&lastMsgTime, &session.SourceIP, &session.UserAgent, &session.LoginTime, &createdAt, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Session{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if lastMsgTime.Valid {
+		session.LastMsgTime = lastMsgTime.Time
+	}
+	session.CreatedAt = createdAt
+	session.UpdatedAt = updatedAt
+	return session, nil
+}
+
+func (s *MySQLStore) SaveCustomerProfile(ctx context.Context, tenantID, appID, userID, userName, avatar string) error {
+	if tenantID == "" || appID == "" || userID == "" || (userName == "" && avatar == "") {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cs_user (tenant_id, app_id, user_id, nickname, avatar, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'enabled', NOW(), NOW())
+		ON DUPLICATE KEY UPDATE
+			nickname = IF(VALUES(nickname) <> '', VALUES(nickname), nickname),
+			avatar = IF(VALUES(avatar) <> '', VALUES(avatar), avatar),
+			status = IF(status = '', 'enabled', status),
+			deleted_at = NULL,
+			updated_at = NOW()`,
+		tenantID, appID, userID, userName, avatar,
+	)
+	return err
+}
+
+func (s *MySQLStore) GetCustomerTags(ctx context.Context, tenantID, appID, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tag_name
+		FROM cs_customer_tag
+		WHERE tenant_id = ? AND app_id = ? AND user_id = ? AND deleted_at IS NULL
+		ORDER BY id ASC`,
+		tenantID, appID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+	return tags, rows.Err()
+}
+
+func (s *MySQLStore) ReplaceCustomerTags(ctx context.Context, tenantID, appID, userID string, tags []string) ([]string, error) {
+	normalized := normalizeTags(tags)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE cs_customer_tag
+		SET deleted_at = ?, updated_at = ?
+		WHERE tenant_id = ? AND app_id = ? AND user_id = ? AND deleted_at IS NULL`,
+		now, now, tenantID, appID, userID,
+	); err != nil {
+		return nil, err
+	}
+	for _, tag := range normalized {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cs_customer_tag (tenant_id, app_id, user_id, tag_name, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE deleted_at = NULL, updated_at = VALUES(updated_at)`,
+			tenantID, appID, userID, tag, now, now,
+		); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (s *MySQLStore) UpdateSession(ctx context.Context, session domain.Session) error {

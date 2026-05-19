@@ -3,11 +3,13 @@ import { getThemeClasses, type ChatTheme, themeLabels, themeList } from '../../.
 
 interface ChatHeaderProps {
   theme: ChatTheme;
-  onToggleTheme: () => void;
+  brandName: string;
+  onThemeChange: (theme: ChatTheme) => void;
   onEndSession: () => void;
+  onTransferToAgent: () => void;
 }
 
-export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatHeaderProps) {
+export default function ChatHeader({ theme, brandName, onThemeChange, onEndSession, onTransferToAgent }: ChatHeaderProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
   const t = getThemeClasses(theme);
@@ -22,7 +24,7 @@ export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatH
           <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full ${t.onlineDot} border-2 border-white`} />
         </div>
         <div>
-          <div className={`text-sm font-semibold ${t.headerText}`}>ChatFlow 客服</div>
+          <div className={`text-sm font-semibold ${t.headerText}`}>{brandName} 客服</div>
           <div className={`text-[11px] ${t.headerSubText} flex items-center gap-1`}>
             <span className={`w-1 h-1 rounded-full ${t.onlineDot} animate-pulse`} />
             在线中
@@ -31,7 +33,6 @@ export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatH
       </div>
 
       <div className="flex items-center gap-1">
-        {/* Theme picker toggle */}
         <div className="relative">
           <button
             onClick={() => { setShowThemePicker(!showThemePicker); setShowMenu(false); }}
@@ -52,7 +53,7 @@ export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatH
                   return (
                     <button
                       key={tk}
-                      onClick={() => { onToggleTheme(); setShowThemePicker(false); }}
+                      onClick={() => { onThemeChange(tk); setShowThemePicker(false); }}
                       className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors ${
                         isActive ? `${t.settingItemActiveBg} ${t.settingItemActiveText}` : `${t.menuItemText} ${t.menuItemHover}`
                       }`}
@@ -71,7 +72,6 @@ export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatH
           )}
         </div>
 
-        {/* More menu */}
         <div className="relative">
           <button
             onClick={() => { setShowMenu(!showMenu); setShowThemePicker(false); }}
@@ -92,7 +92,7 @@ export default function ChatHeader({ theme, onToggleTheme, onEndSession }: ChatH
                   结束并评价
                 </button>
                 <button
-                  onClick={() => { setShowMenu(false); }}
+                  onClick={() => { onTransferToAgent(); setShowMenu(false); }}
                   className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 transition-colors ${t.menuItemText} ${t.menuItemHover}`}
                 >
                   <i className="ri-customer-service-2-line text-xs" />

@@ -33,11 +33,15 @@ const (
 )
 
 type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Status        string    `json:"status"`
+	AgentLimit    int       `json:"agent_limit"`
+	AdminUsername string    `json:"admin_username,omitempty"`
+	AdminPassword string    `json:"admin_password,omitempty"`
+	GFastUserID   int64     `json:"gfast_user_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Channel struct {
@@ -58,6 +62,8 @@ type Agent struct {
 	ID           string    `json:"id"`
 	TenantID     string    `json:"tenant_id"`
 	AgentID      string    `json:"agent_id"`
+	GFastUserID  int64     `json:"gfast_user_id"`
+	Password     string    `json:"password,omitempty"`
 	Username     string    `json:"username"`
 	DisplayName  string    `json:"display_name"`
 	MaxSessions  int       `json:"max_sessions"`
@@ -141,6 +147,29 @@ type TenantConfig struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type FAQ struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	FAQID     string    `json:"faq_id"`
+	Question  string    `json:"question"`
+	Answer    string    `json:"answer"`
+	IsCommon  bool      `json:"is_common"`
+	Status    string    `json:"status"`
+	Sort      int       `json:"sort"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type CustomerTag struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	AppID     string    `json:"app_id"`
+	UserID    string    `json:"user_id"`
+	TagName   string    `json:"tag_name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type DailyReport struct {
 	Date            string `json:"date"`
 	NewSessions     int64  `json:"new_sessions"`
@@ -150,22 +179,26 @@ type DailyReport struct {
 }
 
 type Session struct {
-	ID          string        `json:"id"`
-	TenantID    string        `json:"tenant_id"`
-	AppID       string        `json:"app_id"`
-	ChannelID   string        `json:"channel_id"`
-	UserID      string        `json:"user_id"`
-	AgentID     string        `json:"agent_id"`
-	GroupID     string        `json:"group_id"`
-	Status      SessionStatus `json:"status"`
-	Priority    int           `json:"priority"`
-	LastSeq     int64         `json:"last_seq"`
-	LastMsgTime time.Time     `json:"last_msg_time"`
-	SourceIP    string        `json:"source_ip"`
-	UserAgent   string        `json:"user_agent"`
-	LoginTime   time.Time     `json:"login_time"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ID             string        `json:"id"`
+	TenantID       string        `json:"tenant_id"`
+	AppID          string        `json:"app_id"`
+	ChannelID      string        `json:"channel_id"`
+	UserID         string        `json:"user_id"`
+	UserName       string        `json:"user_name"`
+	UserAvatar     string        `json:"user_avatar"`
+	AgentID        string        `json:"agent_id"`
+	GroupID        string        `json:"group_id"`
+	Status         SessionStatus `json:"status"`
+	Priority       int           `json:"priority"`
+	LastSeq        int64         `json:"last_seq"`
+	LastMsgTime    time.Time     `json:"last_msg_time"`
+	SourceIP       string        `json:"source_ip"`
+	SourceLocation string        `json:"source_location"`
+	CustomerOnline bool          `json:"customer_online"`
+	UserAgent      string        `json:"user_agent"`
+	LoginTime      time.Time     `json:"login_time"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
 }
 
 type Message struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tiger1103/gfast/v3/internal/customer/domain"
@@ -260,4 +261,112 @@ func (s *MySQLStore) UpsertTenantConfig(ctx context.Context, item domain.TenantC
 		ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), value_type = VALUES(value_type), remark = VALUES(remark), updated_at = VALUES(updated_at)`,
 		item.TenantID, item.ConfigKey, item.ConfigValue, item.ValueType, item.Remark, now, now)
 	return item, err
+}
+
+const commonFAQTenantID = "__common__"
+
+func faqTenantID(tenantID string, common bool) string {
+	if common {
+		return commonFAQTenantID
+	}
+	return tenantID
+}
+
+func (s *MySQLStore) ListFAQs(ctx context.Context, tenantID string, common bool, limit, offset int) ([]domain.FAQ, error) {
+	limit, offset = normalizePage(limit, offset)
+	targetTenantID := faqTenantID(tenantID, common)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, faq_id, question, answer, is_common, status, sort, created_at, updated_at
+		FROM cs_faq
+		WHERE tenant_id = ? AND is_common = ? AND deleted_at IS NULL
+		ORDER BY sort DESC, id DESC LIMIT ? OFFSET ?`, targetTenantID, boolToInt(common), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []domain.FAQ
+	for rows.Next() {
+		var item domain.FAQ
+		var dbID int64
+		var isCommon int
+		if err := rows.Scan(
+			&dbID, &item.TenantID, &item.FAQID, &item.Question, &item.Answer,
+			&isCommon, &item.Status, &item.Sort, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.ID = item.FAQID
+		item.IsCommon = isCommon == 1
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *MySQLStore) ReplaceFAQs(ctx context.Context, tenantID string, common bool, items []domain.FAQ) ([]domain.FAQ, error) {
+	targetTenantID := faqTenantID(tenantID, common)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE cs_faq
+		SET deleted_at = ?, updated_at = ?
+		WHERE tenant_id = ? AND is_common = ? AND deleted_at IS NULL`, now, now, targetTenantID, boolToInt(common)); err != nil {
+		return nil, err
+	}
+
+	saved := make([]domain.FAQ, 0, len(items))
+	for i, item := range items {
+		item.Question = strings.TrimSpace(item.Question)
+		item.Answer = strings.TrimSpace(item.Answer)
+		if item.Question == "" || item.Answer == "" {
+			continue
+		}
+		if item.FAQID == "" {
+			item.FAQID = item.ID
+		}
+		if item.FAQID == "" {
+			item.FAQID = uuid.NewString()
+		}
+		if item.Status == "" {
+			item.Status = "enabled"
+		}
+		item.TenantID = targetTenantID
+		item.IsCommon = common
+		item.Sort = len(items) - i
+		item.CreatedAt = now
+		item.UpdatedAt = now
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cs_faq (tenant_id, faq_id, question, answer, is_common, status, sort, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+			ON DUPLICATE KEY UPDATE
+				question = VALUES(question),
+				answer = VALUES(answer),
+				is_common = VALUES(is_common),
+				status = VALUES(status),
+				sort = VALUES(sort),
+				deleted_at = NULL,
+				updated_at = VALUES(updated_at)`,
+			item.TenantID, item.FAQID, item.Question, item.Answer, boolToInt(item.IsCommon), item.Status, item.Sort, now, now); err != nil {
+			return nil, err
+		}
+		item.ID = item.FAQID
+		saved = append(saved, item)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return saved, nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

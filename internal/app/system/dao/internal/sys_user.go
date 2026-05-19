@@ -35,6 +35,7 @@ type SysUserColumns struct {
 	DeptId        string
 	Remark        string
 	IsAdmin       string
+	UserType      string
 	Address       string
 	Describe      string
 	LastLoginIp   string
@@ -62,6 +63,7 @@ var sysUserColumns = SysUserColumns{
 	DeptId:        "dept_id",
 	Remark:        "remark",
 	IsAdmin:       "is_admin",
+	UserType:      "user_type",
 	Address:       "address",
 	Describe:      "describe",
 	LastLoginIp:   "last_login_ip",

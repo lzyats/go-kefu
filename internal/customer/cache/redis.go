@@ -164,6 +164,27 @@ func (r *RedisCache) RefreshConnection(ctx context.Context, tenantID, userType, 
 	return r.client.Expire(ctx, connectionKey(tenantID, userType, userID, deviceID), 2*time.Hour).Err()
 }
 
+func (r *RedisCache) HasConnection(ctx context.Context, tenantID, userType, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	var cursor uint64
+	pattern := connectionKey(tenantID, userType, userID, "*")
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, pattern, 20).Result()
+		if err != nil {
+			return false, err
+		}
+		if len(keys) > 0 {
+			return true, nil
+		}
+		if next == 0 {
+			return false, nil
+		}
+		cursor = next
+	}
+}
+
 func agentZSetKey(tenantID, groupID string) string {
 	return "cs:agent:zset:" + tenantID + ":" + groupID
 }

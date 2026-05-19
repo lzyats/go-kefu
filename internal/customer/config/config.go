@@ -7,15 +7,16 @@ import (
 )
 
 type Config struct {
-	API      ServerConfig   `yaml:"api"`
-	WS       ServerConfig   `yaml:"ws"`
-	Log      LogConfig      `yaml:"log"`
-	MySQL    MySQLConfig    `yaml:"mysql"`
-	Redis    RedisConfig    `yaml:"redis"`
-	RocketMQ RocketMQConfig `yaml:"rocketmq"`
-	Outbox   OutboxConfig   `yaml:"outbox"`
-	JWT      JWTConfig      `yaml:"jwt"`
-	Upload   UploadConfig   `yaml:"upload"`
+	API       ServerConfig    `yaml:"api"`
+	WS        ServerConfig    `yaml:"ws"`
+	Log       LogConfig       `yaml:"log"`
+	MySQL     MySQLConfig     `yaml:"mysql"`
+	Redis     RedisConfig     `yaml:"redis"`
+	RocketMQ  RocketMQConfig  `yaml:"rocketmq"`
+	Outbox    OutboxConfig    `yaml:"outbox"`
+	JWT       JWTConfig       `yaml:"jwt"`
+	Upload    UploadConfig    `yaml:"upload"`
+	IP2Region IP2RegionConfig `yaml:"ip2region"`
 }
 
 type ServerConfig struct {
@@ -66,6 +67,11 @@ type UploadConfig struct {
 	S3      S3UploadConfig `yaml:"s3"`
 }
 
+type IP2RegionConfig struct {
+	XDBPath   string `yaml:"xdb_path"`
+	V6XDBPath string `yaml:"v6_xdb_path"`
+}
+
 type LocalUpload struct {
 	Path    string `yaml:"path"`
 	BaseURL string `yaml:"base_url"`
@@ -99,6 +105,9 @@ func MustLoad(path string) Config {
 		},
 		Upload: UploadConfig{
 			Local: LocalUpload{Path: "uploads"},
+		},
+		IP2Region: IP2RegionConfig{
+			XDBPath: "resource/ip2region/ip2region.xdb",
 		},
 	}
 
@@ -143,5 +152,8 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Upload.Local.Path == "" {
 		cfg.Upload.Local.Path = "uploads"
+	}
+	if cfg.IP2Region.XDBPath == "" {
+		cfg.IP2Region.XDBPath = "resource/ip2region/ip2region.xdb"
 	}
 }

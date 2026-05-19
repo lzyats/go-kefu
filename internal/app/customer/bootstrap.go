@@ -36,6 +36,7 @@ func mountAPI(s *ghttp.Server, handler http.Handler) {
 
 	s.BindHandler("/customer-api/*any", stripCustomerAPI)
 	s.BindHandler("GET:/health", wrapped)
+	s.BindHandler("GET:/api/v1/configs/public", wrapped)
 	s.BindHandler("POST:/api/v1/sessions", wrapped)
 	s.BindHandler("GET:/api/v1/sessions/{session_id}/messages", wrapped)
 	s.BindHandler("POST:/api/v1/messages", wrapped)
@@ -119,6 +120,10 @@ func loadOptions(ctx context.Context) customerapp.Options {
 				BaseURL:         g.Cfg().MustGet(ctx, "upload.s3.baseUrl").String(),
 				ForcePathStyle:  g.Cfg().MustGet(ctx, "upload.s3.forcePathStyle").Bool(),
 			},
+		},
+		IP2Region: customerapp.IP2RegionOptions{
+			XDBPath:   g.Cfg().MustGet(ctx, "customer.ip2region.xdb_path", "resource/ip2region/ip2region.xdb").String(),
+			V6XDBPath: g.Cfg().MustGet(ctx, "customer.ip2region.v6_xdb_path").String(),
 		},
 	}
 }

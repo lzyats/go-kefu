@@ -430,6 +430,7 @@ func (s *sSysUser) Add(ctx context.Context, req *system.UserAddReq) (err error) 
 				DeptId:       req.DeptId,
 				Remark:       req.Remark,
 				IsAdmin:      req.IsAdmin,
+				UserType:     normalizeUserType(req.UserType),
 			})
 			liberr.ErrIsNil(ctx, e, "添加用户失败")
 			e = s.addUserRole(ctx, req.RoleIds, int64(userId))
@@ -472,6 +473,17 @@ func (s *sSysUser) Edit(ctx context.Context, req *system.UserEditReq) (err error
 	if err != nil {
 		return
 	}
+	userType := normalizeUserType(req.UserType)
+	if req.UserType == nil {
+		var oldUser *entity.SysUser
+		oldUser, err = s.GetUserInfoById(ctx, uint64(req.UserId))
+		if err != nil {
+			return
+		}
+		if oldUser != nil {
+			userType = oldUser.UserType
+		}
+	}
 	err = g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		err = g.Try(ctx, func(ctx context.Context) {
 			_, err = dao.SysUser.Ctx(ctx).TX(tx).WherePri(req.UserId).Update(do.SysUser{
@@ -483,6 +495,7 @@ func (s *sSysUser) Edit(ctx context.Context, req *system.UserEditReq) (err error
 				DeptId:       req.DeptId,
 				Remark:       req.Remark,
 				IsAdmin:      req.IsAdmin,
+				UserType:     userType,
 			})
 			liberr.ErrIsNil(ctx, err, "修改用户信息失败")
 			//设置用户所属角色信息
@@ -494,6 +507,16 @@ func (s *sSysUser) Edit(ctx context.Context, req *system.UserEditReq) (err error
 		return err
 	})
 	return
+}
+
+func normalizeUserType(userType *int) int {
+	if userType == nil {
+		return 1
+	}
+	if *userType < 0 || *userType > 2 {
+		return 1
+	}
+	return *userType
 }
 
 // AddUserPost 添加用户岗位信息

@@ -601,3 +601,32 @@ export const themeLabels: Record<ChatTheme, { label: string; desc: string; color
 };
 
 export const themeList: ChatTheme[] = ['fresh', 'darkTech', 'warm', 'business', 'luxury'];
+
+export const chatThemeStorageKey = 'kefu:web:chat_theme';
+
+export function normalizeChatTheme(value: unknown): ChatTheme {
+  return themeList.includes(value as ChatTheme) ? (value as ChatTheme) : 'fresh';
+}
+
+function readUrlChatTheme(): ChatTheme | null {
+  if (typeof window === 'undefined') return null;
+  const theme = new URLSearchParams(window.location.search).get('theme');
+  return theme && themeList.includes(theme as ChatTheme) ? (theme as ChatTheme) : null;
+}
+
+export function readSavedChatTheme(): ChatTheme {
+  if (typeof window === 'undefined') return 'fresh';
+  const urlTheme = readUrlChatTheme();
+  if (urlTheme) return urlTheme;
+  return normalizeChatTheme(window.localStorage.getItem(chatThemeStorageKey));
+}
+
+export function hasSavedChatTheme() {
+  if (typeof window === 'undefined') return false;
+  return Boolean(readUrlChatTheme() || window.localStorage.getItem(chatThemeStorageKey));
+}
+
+export function saveChatTheme(theme: ChatTheme) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(chatThemeStorageKey, theme);
+}

@@ -233,6 +233,21 @@ export const customerRoutes: Array<RouteRecordRaw> = [
 				},
 			},
 			{
+				path: '/customer/faq',
+				name: 'customerFAQ',
+				component: () => import('/@/views/customer/faq/index.vue'),
+				meta: {
+					title: '常见问题',
+					isLink: '',
+					isHide: false,
+					isKeepAlive: true,
+					isAffix: false,
+					isIframe: false,
+					roles: ['admin'],
+					icon: 'ele-QuestionFilled',
+				},
+			},
+			{
 				path: '/customer/config',
 				name: 'customerConfig',
 				component: () => import('/@/views/customer/config/index.vue'),

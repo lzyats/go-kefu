@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/tiger1103/gfast/v3/internal/customer/cache"
 	"github.com/tiger1103/gfast/v3/internal/customer/config"
 	"github.com/tiger1103/gfast/v3/internal/customer/domain"
+	"github.com/tiger1103/gfast/v3/internal/customer/geo"
 	"github.com/tiger1103/gfast/v3/internal/customer/store"
 	"github.com/tiger1103/gfast/v3/internal/customer/tenant"
 	"github.com/tiger1103/gfast/v3/internal/customer/upload"
@@ -22,6 +25,7 @@ type Server struct {
 	log   *zap.Logger
 	store store.Store
 	cache *cache.RedisCache
+	geo   *geo.Locator
 }
 
 func NewRouter(cfg config.Config, log *zap.Logger, dataStore store.Store, redisCache *cache.RedisCache) http.Handler {
@@ -34,6 +38,7 @@ func NewRouter(cfg config.Config, log *zap.Logger, dataStore store.Store, redisC
 		log:   log,
 		store: dataStore,
 		cache: redisCache,
+		geo:   geo.NewLocator(cfg.IP2Region, log),
 	}
 
 	r.GET("/health", s.health)
@@ -46,6 +51,7 @@ func NewRouter(cfg config.Config, log *zap.Logger, dataStore store.Store, redisC
 	v1 := r.Group("/api/v1")
 	v1.Use(tenant.Middleware())
 	{
+		v1.GET("/configs/public", s.publicConfigs)
 		v1.POST("/sessions", s.createSession)
 		v1.GET("/sessions/:session_id/messages", s.listMessages)
 		v1.POST("/messages", s.sendMessage)
@@ -64,10 +70,38 @@ func (s *Server) health(c *gin.Context) {
 }
 
 type createSessionRequest struct {
-	UserID    string `json:"user_id" binding:"required"`
-	ChannelID string `json:"channel_id"`
-	GroupID   string `json:"group_id"`
-	Priority  int    `json:"priority"`
+	UserID      string `json:"user_id" binding:"required"`
+	UserName    string `json:"user_name"`
+	UserNameAlt string `json:"userName"`
+	DisplayName string `json:"display_name"`
+	Username    string `json:"username"`
+	Nickname    string `json:"nickname"`
+	Name        string `json:"name"`
+	Avatar      string `json:"avatar"`
+	AvatarURL   string `json:"avatar_url"`
+	AvatarURL2  string `json:"avatarUrl"`
+	UserAvatar  string `json:"user_avatar"`
+	ChannelID   string `json:"channel_id"`
+	GroupID     string `json:"group_id"`
+	Priority    int    `json:"priority"`
+}
+
+func (r createSessionRequest) displayName() string {
+	for _, item := range []string{r.UserName, r.UserNameAlt, r.DisplayName, r.Nickname, r.Name, r.Username} {
+		if value := strings.TrimSpace(item); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (r createSessionRequest) avatarURL() string {
+	for _, item := range []string{r.Avatar, r.AvatarURL, r.AvatarURL2, r.UserAvatar} {
+		if value := strings.TrimSpace(item); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Server) createSession(c *gin.Context) {
@@ -92,6 +126,34 @@ func (s *Server) createSession(c *gin.Context) {
 	if groupID == "" {
 		groupID = "default"
 	}
+
+	sourceIP := clientIP(c)
+	userName := req.displayName()
+	avatar := req.avatarURL()
+	existing, err := s.store.FindActiveSessionByUser(c.Request.Context(), tc.TenantID, tc.AppID, req.ChannelID, req.UserID)
+	if err == nil {
+		existing.SourceIP = sourceIP
+		if userName != "" || avatar != "" {
+			if saveErr := s.store.SaveCustomerProfile(c.Request.Context(), tc.TenantID, tc.AppID, req.UserID, userName, avatar); saveErr != nil {
+				s.log.Sugar().Warnw("save customer profile failed", "tenant_id", tc.TenantID, "app_id", tc.AppID, "user_id", req.UserID, "error", saveErr)
+			}
+			if userName != "" {
+				existing.UserName = userName
+			}
+			if avatar != "" {
+				existing.UserAvatar = avatar
+			}
+		}
+		if existing.UserAgent == "" {
+			existing.UserAgent = c.Request.UserAgent()
+		}
+		c.JSON(http.StatusOK, s.enrichSession(c.Request.Context(), existing))
+		return
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.log.Sugar().Warnw("find active session failed", "tenant_id", tc.TenantID, "app_id", tc.AppID, "user_id", req.UserID, "error", err)
+	}
+
 	assigned, err := s.cache.AssignLeastBusyAgent(c.Request.Context(), tc.TenantID, groupID)
 	if err == nil {
 		agentID = assigned.AgentID
@@ -101,16 +163,18 @@ func (s *Server) createSession(c *gin.Context) {
 	}
 
 	session, err := s.store.CreateSession(c.Request.Context(), domain.Session{
-		TenantID:  tc.TenantID,
-		AppID:     tc.AppID,
-		ChannelID: req.ChannelID,
-		UserID:    req.UserID,
-		AgentID:   agentID,
-		GroupID:   groupID,
-		Priority:  req.Priority,
-		Status:    status,
-		SourceIP:  c.ClientIP(),
-		UserAgent: c.Request.UserAgent(),
+		TenantID:   tc.TenantID,
+		AppID:      tc.AppID,
+		ChannelID:  req.ChannelID,
+		UserID:     req.UserID,
+		UserName:   userName,
+		UserAvatar: avatar,
+		AgentID:    agentID,
+		GroupID:    groupID,
+		Priority:   req.Priority,
+		Status:     status,
+		SourceIP:   sourceIP,
+		UserAgent:  c.Request.UserAgent(),
 	})
 	if err != nil {
 		if agentID != "" {
@@ -121,7 +185,7 @@ func (s *Server) createSession(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, session)
+	c.JSON(http.StatusCreated, s.enrichSession(c.Request.Context(), session))
 }
 
 type agentOnlineRequest struct {
@@ -270,4 +334,34 @@ func (s *Server) listMessages(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) enrichSession(ctx context.Context, session domain.Session) domain.Session {
+	if session.SourceLocation == "" && session.SourceIP != "" {
+		session.SourceLocation = s.geo.Lookup(session.SourceIP)
+	}
+	if s.cache != nil && session.UserID != "" {
+		online, err := s.cache.HasConnection(ctx, session.TenantID, string(domain.UserTypeCustomer), session.UserID)
+		if err == nil {
+			session.CustomerOnline = online
+		}
+	}
+	return session
+}
+
+func (s *Server) enrichSessions(ctx context.Context, items []domain.Session) []domain.Session {
+	for i := range items {
+		items[i] = s.enrichSession(ctx, items[i])
+	}
+	return items
+}
+
+func clientIP(c *gin.Context) string {
+	if value := c.GetHeader("X-Forwarded-For"); value != "" {
+		return value
+	}
+	if value := c.GetHeader("X-Real-IP"); value != "" {
+		return value
+	}
+	return c.ClientIP()
 }

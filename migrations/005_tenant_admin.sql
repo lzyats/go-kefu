@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS cs_tenant_admin (
+﻿CREATE TABLE IF NOT EXISTS cs_tenant_admin (
   id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
   tenant_id VARCHAR(64) NOT NULL COMMENT '租户ID',
   gfast_user_id BIGINT NOT NULL COMMENT 'GFast后台用户ID',
@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS cs_tenant_admin (
   UNIQUE KEY uk_tenant_user (tenant_id, gfast_user_id),
   KEY idx_user (gfast_user_id),
   KEY idx_tenant_status (tenant_id, status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='租户后台用户绑定表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='租户后台用户绑定表';

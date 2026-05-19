@@ -16,15 +16,16 @@ import (
 )
 
 type Options struct {
-	APIAddr string
-	WSAddr  string
-	Log     LogOptions
-	MySQL   MySQLOptions
-	Redis   RedisOptions
-	Rocket  RocketMQOptions
-	Outbox  OutboxOptions
-	JWT     JWTOptions
-	Upload  UploadOptions
+	APIAddr   string
+	WSAddr    string
+	Log       LogOptions
+	MySQL     MySQLOptions
+	Redis     RedisOptions
+	Rocket    RocketMQOptions
+	Outbox    OutboxOptions
+	JWT       JWTOptions
+	Upload    UploadOptions
+	IP2Region IP2RegionOptions
 }
 
 type LogOptions struct {
@@ -84,6 +85,11 @@ type S3UploadOptions struct {
 	SecretAccessKey string
 	BaseURL         string
 	ForcePathStyle  bool
+}
+
+type IP2RegionOptions struct {
+	XDBPath   string
+	V6XDBPath string
 }
 
 type Runtime struct {
@@ -183,6 +189,10 @@ func toInternalConfig(opts Options) config.Config {
 				ForcePathStyle:  opts.Upload.S3.ForcePathStyle,
 			},
 		},
+		IP2Region: config.IP2RegionConfig{
+			XDBPath:   opts.IP2Region.XDBPath,
+			V6XDBPath: opts.IP2Region.V6XDBPath,
+		},
 	}
 	if cfg.API.Addr == "" {
 		cfg.API.Addr = ":8101"
@@ -204,6 +214,9 @@ func toInternalConfig(opts Options) config.Config {
 	}
 	if cfg.Upload.Local.Path == "" {
 		cfg.Upload.Local.Path = "uploads"
+	}
+	if cfg.IP2Region.XDBPath == "" {
+		cfg.IP2Region.XDBPath = "resource/ip2region/ip2region.xdb"
 	}
 	return cfg
 }
